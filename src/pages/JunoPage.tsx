@@ -1,4 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "../supabase";
+
+type MealRow = {
+  date_iso: string;
+  main: string;
+  rice: string;
+  side: string;
+  dessert: string;
+};
 
 function todayISO() {
   const d = new Date();
@@ -15,36 +24,110 @@ export default function JunoPage() {
   const [side, setSide] = useState("");
   const [dessert, setDessert] = useState("");
 
-  const shareLink = useMemo(() => {
-    // 나중에 Supabase 붙이면 date 대신 UUID/토큰으로 바꿀 예정
+  const [saving, setSaving] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [history, setHistory] = useState<MealRow[]>([]);
+
+  const andrewLink = useMemo(() => {
     return `${window.location.origin}/andrew?date=${dateISO}`;
   }, [dateISO]);
 
   async function copyLink() {
     try {
-      await navigator.clipboard.writeText(shareLink);
+      await navigator.clipboard.writeText(andrewLink);
       alert("남편 링크 복사 완료 ✅");
     } catch {
-      prompt("복사 안 되면 이 링크를 복사해서 보내:", shareLink);
+      prompt("복사 안 되면 이 링크를 복사해서 보내:", andrewLink);
     }
   }
+
+  async function loadMeal(date: string) {
+    const { data, error } = await supabase
+      .from("meals")
+      .select("date_iso,main,rice,side,dessert")
+      .eq("date_iso", date)
+      .maybeSingle();
+
+    if (!error && data) {
+      setMain(data.main ?? "");
+      setRice(data.rice ?? "잡곡밥");
+      setSide(data.side ?? "");
+      setDessert(data.dessert ?? "");
+    } else {
+      setMain("");
+      setRice("잡곡밥");
+      setSide("");
+      setDessert("");
+    }
+  }
+
+  async function loadHistory() {
+    setLoadingHistory(true);
+    const { data, error } = await supabase
+      .from("meals")
+      .select("date_iso,main,rice,side,dessert")
+      .order("date_iso", { ascending: false })
+      .limit(14);
+
+    if (!error && data) setHistory(data as MealRow[]);
+    setLoadingHistory(false);
+  }
+
+  useEffect(() => {
+    loadHistory();
+    loadMeal(dateISO);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function onChangeDate(next: string) {
+    setDateISO(next);
+    await loadMeal(next);
+  }
+
+  async function saveMeal() {
+    if (!main.trim() || !side.trim() || !dessert.trim()) {
+      alert("메인/사이드/디저트는 입력해줘 😇");
+      return;
+    }
+
+    setSaving(true);
+    const { error } = await supabase.from("meals").upsert({
+      date_iso: dateISO,
+      main: main.trim(),
+      rice: rice.trim() || "잡곡밥",
+      side: side.trim(),
+      dessert: dessert.trim(),
+    });
+    setSaving(false);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    await loadHistory();
+    alert("메뉴 저장 완료 ✅");
+  }
+
+  const card =
+    "rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3";
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
       <div className="mx-auto max-w-md p-5 space-y-4">
         <header className="pt-2 space-y-1">
           <div className="text-xs opacity-70">/juno</div>
-          <h1 className="text-2xl font-bold">Juno 메뉴 입력 🍱</h1>
-          <p className="text-sm opacity-70">모바일용. 오늘 메뉴 만들고 남편 링크 보내기.</p>
+          <h1 className="text-2xl font-bold">Juno 메뉴 🍱</h1>
+          <p className="text-sm opacity-70">날짜 선택 → 메뉴 저장 → 남편 링크 복사</p>
         </header>
 
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3">
+        <div className={card}>
           <label className="block">
             <div className="text-sm font-semibold mb-1">날짜</div>
             <input
               type="date"
               value={dateISO}
-              onChange={(e) => setDateISO(e.target.value)}
+              onChange={(e) => onChangeDate(e.target.value)}
               className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
             />
           </label>
@@ -84,28 +167,55 @@ export default function JunoPage() {
             <input
               value={dessert}
               onChange={(e) => setDessert(e.target.value)}
-              placeholder="슈가플럼 + 메이플로즈 아몬드"
+              placeholder="과일"
               className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
             />
           </label>
 
-          <div className="grid grid-cols-1 gap-2 pt-1">
-            <button
-              type="button"
-              onClick={copyLink}
-              className="w-full rounded-xl py-3 font-semibold border border-emerald-600 bg-emerald-500/10 active:scale-[0.99]"
-            >
-              남편 링크 복사 ✅
-            </button>
+          <button
+            type="button"
+            onClick={saveMeal}
+            disabled={saving}
+            className={`w-full rounded-xl py-3 font-semibold border border-emerald-600 bg-emerald-500/10 active:scale-[0.99] ${
+              saving ? "opacity-60" : ""
+            }`}
+          >
+            {saving ? "저장중..." : "메뉴 저장 ✅"}
+          </button>
 
-            <div className="text-xs opacity-60 break-all">
-              링크: {shareLink}
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={copyLink}
+            className="w-full rounded-xl py-3 font-semibold border border-zinc-700 bg-zinc-950/40 active:scale-[0.99]"
+          >
+            남편 링크 복사
+          </button>
+
+          <div className="text-xs opacity-60 break-all">링크: {andrewLink}</div>
         </div>
 
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 text-sm opacity-80">
-          히스토리/달력은 다음 단계에서 Supabase 붙이고 바로 넣자.
+        <div className={card}>
+          <div className="font-semibold">최근 메뉴 (14일)</div>
+          {loadingHistory ? (
+            <div className="text-sm opacity-70">불러오는중…</div>
+          ) : history.length === 0 ? (
+            <div className="text-sm opacity-70">아직 없음. 첫 메뉴 저장 ㄱㄱ</div>
+          ) : (
+            <div className="space-y-2">
+              {history.map((m) => (
+                <button
+                  key={m.date_iso}
+                  onClick={() => onChangeDate(m.date_iso)}
+                  className="w-full text-left rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 active:scale-[0.99]"
+                >
+                  <div className="text-sm font-semibold">{m.date_iso}</div>
+                  <div className="text-xs opacity-70 mt-1">
+                    {m.main} · {m.side} · {m.dessert}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
