@@ -38,13 +38,7 @@ function setQueryDate(dateISO: string) {
   window.history.replaceState({}, "", url.toString());
 }
 
-function Stars({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-}) {
+function Stars({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
     <div className="flex gap-1.5">
       {[1, 2, 3, 4, 5].map((n) => (
@@ -52,16 +46,18 @@ function Stars({
           key={n}
           type="button"
           onClick={() => onChange(n)}
-          className={`text-xl leading-none active:scale-95 ${
+          className={`w-9 h-9 flex items-center justify-center leading-none p-0 rounded-lg active:scale-95 ${
             n <= value ? "opacity-100" : "opacity-30"
           }`}
+          aria-label={`${n} stars`}
         >
-          ⭐
+          <span className="text-[18px] leading-none">⭐</span>
         </button>
       ))}
     </div>
   );
 }
+
 
 export default function AndrewPage() {
   const initialDate = useMemo(() => getDateFromQuery(), []);
@@ -180,7 +176,7 @@ export default function AndrewPage() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
-      <div className="mx-auto max-w-md p-5 space-y-4">
+      <div className="mx-auto max-w-md p-5 space-y-4 min-w-0">
         <header className="pt-2 space-y-1">
           <div className="text-xs opacity-70">/andrew</div>
           <h1 className="text-2xl font-bold">Andrew的点评专区 📝</h1>
@@ -191,11 +187,12 @@ export default function AndrewPage() {
           <label className="block">
             <div className="text-sm font-semibold mb-1">日期</div>
             <input
-              type="date"
-              value={dateISO}
-              onChange={(e) => onChangeDate(e.target.value)}
-              className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
-            />
+  type="date"
+  value={dateISO}
+  onChange={(e) => onChangeDate(e.target.value)}
+  className="w-full h-12 px-3 rounded-xl bg-zinc-950/60 border border-zinc-800 outline-none"
+/>
+
           </label>
         </div>
 
@@ -223,7 +220,7 @@ export default function AndrewPage() {
           <div className="font-semibold">1) 蛋白质</div>
           <Stars value={mainRating} onChange={setMainRating} />
           <textarea
-            className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+            className="w-full min-w-0 rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
             rows={2}
             placeholder="备注（可选）示例: 肉如果再软一点就满分啦！"
             value={mainComment}
@@ -235,7 +232,7 @@ export default function AndrewPage() {
           <div className="font-semibold">2) 蔬菜</div>
           <Stars value={sideRating} onChange={setSideRating} />
           <textarea
-            className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+            className="w-full min-w-0 rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
             rows={2}
             placeholder="备注（可选）示例: 感觉今天少了一点点用心…下次加一勺爱好吗？"
             value={sideComment}
@@ -247,7 +244,7 @@ export default function AndrewPage() {
           <div className="font-semibold">3) 甜点</div>
           <Stars value={dessertRating} onChange={setDessertRating} />
           <textarea
-            className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+            className="w-full min-w-0 rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
             rows={2}
             placeholder="备注（可选）示例: 我不喜欢！！下次不要再做啦～"
             value={dessertComment}
