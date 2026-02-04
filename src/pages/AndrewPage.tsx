@@ -58,6 +58,23 @@ function Stars({ value, onChange }: { value: number; onChange: (v: number) => vo
   );
 }
 
+// ✅ Rating conversion helpers
+// Stars UI is 1..5, DB is 0..10 (2 points per star).
+// Also supports old data saved as 1..5 by normalizing to 0..10.
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+function starsTo10(stars: number) {
+  return clamp(Math.round(stars) * 2, 0, 10);
+}
+function normalize10(maybe10: number) {
+  // If value looks like old 1..5 data, convert to 2..10.
+  return maybe10 <= 5 ? maybe10 * 2 : maybe10;
+}
+function tenToStarsInt(score10: number) {
+  const v = normalize10(score10);
+  return clamp(Math.round(v / 2), 0, 5);
+}
 
 export default function AndrewPage() {
   const initialDate = useMemo(() => getDateFromQuery(), []);
@@ -107,19 +124,19 @@ export default function AndrewPage() {
 
     const reviewRes = await supabase
       .from("reviews")
-      .select(
-        "date_iso,main_rating,main_comment,side_rating,side_comment,dessert_rating,dessert_comment"
-      )
+      .select("date_iso,main_rating,main_comment,side_rating,side_comment,dessert_rating,dessert_comment")
       .eq("date_iso", date)
       .maybeSingle();
 
     if (!reviewRes.error && reviewRes.data) {
       const r = reviewRes.data as ReviewRow;
-      setMainRating(r.main_rating);
+
+      // ✅ DB(0..10) -> Stars UI(0..5)
+      setMainRating(tenToStarsInt(r.main_rating));
       setMainComment(r.main_comment ?? "");
-      setSideRating(r.side_rating);
+      setSideRating(tenToStarsInt(r.side_rating));
       setSideComment(r.side_comment ?? "");
-      setDessertRating(r.dessert_rating);
+      setDessertRating(tenToStarsInt(r.dessert_rating));
       setDessertComment(r.dessert_comment ?? "");
     } else {
       setMainRating(3);
@@ -152,15 +169,18 @@ export default function AndrewPage() {
     }
 
     setSaving(true);
+
+    // ✅ Stars UI(1..5) -> DB(0..10)
     const { error } = await supabase.from("reviews").upsert({
       date_iso: dateISO,
-      main_rating: mainRating,
+      main_rating: starsTo10(mainRating),
       main_comment: mainComment.trim() || null,
-      side_rating: sideRating,
+      side_rating: starsTo10(sideRating),
       side_comment: sideComment.trim() || null,
-      dessert_rating: dessertRating,
+      dessert_rating: starsTo10(dessertRating),
       dessert_comment: dessertComment.trim() || null,
     });
+
     setSaving(false);
 
     if (error) {
@@ -171,8 +191,7 @@ export default function AndrewPage() {
     alert("저장 완료 ✅");
   }
 
-  const card =
-    "rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3";
+  const card = "rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3";
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
@@ -187,12 +206,11 @@ export default function AndrewPage() {
           <label className="block">
             <div className="text-sm font-semibold mb-1">日期</div>
             <input
-  type="date"
-  value={dateISO}
-  onChange={(e) => onChangeDate(e.target.value)}
-  className="w-full h-12 px-3 rounded-xl bg-zinc-950/60 border border-zinc-800 outline-none"
-/>
-
+              type="date"
+              value={dateISO}
+              onChange={(e) => onChangeDate(e.target.value)}
+              className="w-full h-12 px-3 rounded-xl bg-zinc-950/60 border border-zinc-800 outline-none"
+            />
           </label>
         </div>
 
@@ -200,9 +218,7 @@ export default function AndrewPage() {
           {loadingMeal ? (
             <div className="text-sm opacity-70">加载中…</div>
           ) : !meal ? (
-            <div className="text-sm opacity-70">
-              이 날짜 메뉴가 없음. Juno가 `/juno`에서 저장해야 함.
-            </div>
+            <div className="text-sm opacity-70">이 날짜 메뉴가 없음. Juno가 `/juno`에서 저장해야 함.</div>
           ) : (
             <>
               <div className="font-semibold">老公，今晚吃得好吗 ？</div>

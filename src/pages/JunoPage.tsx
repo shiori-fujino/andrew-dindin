@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabase";
 
+type MainCategory = "beef" | "pork" | "chicken" | "fish" | "takeaway" | null;
+
 type MealRow = {
   date_iso: string;
   main: string;
   rice: string;
   side: string;
   dessert: string;
+  main_category: MainCategory;
+  juno_note: string | null;
 };
 
 function todayISO() {
@@ -20,9 +24,11 @@ function todayISO() {
 export default function JunoPage() {
   const [dateISO, setDateISO] = useState(() => todayISO());
   const [main, setMain] = useState("");
+  const [mainCategory, setMainCategory] = useState<MainCategory>(null);
   const [rice, setRice] = useState("잡곡밥");
   const [side, setSide] = useState("");
   const [dessert, setDessert] = useState("");
+  const [junoNote, setJunoNote] = useState(""); 
 
   const [saving, setSaving] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -41,23 +47,44 @@ export default function JunoPage() {
     }
   }
 
+  function labelEmoji(cat: MainCategory) {
+    switch (cat) {
+      case "beef":
+        return "🐮";
+      case "pork":
+        return "🐷";
+      case "chicken":
+        return "🐔";
+      case "fish":
+        return "🐟";
+      case "takeaway":
+        return "🥡";
+      default:
+        return " ";
+    }
+  }
+
   async function loadMeal(date: string) {
     const { data, error } = await supabase
       .from("meals")
-      .select("date_iso,main,rice,side,dessert")
+      .select("date_iso,main,rice,side,dessert,main_category,juno_note")
       .eq("date_iso", date)
       .maybeSingle();
 
     if (!error && data) {
       setMain(data.main ?? "");
+      setMainCategory((data.main_category as MainCategory) ?? null);
       setRice(data.rice ?? "잡곡밥");
       setSide(data.side ?? "");
       setDessert(data.dessert ?? "");
+      setJunoNote(data.juno_note ?? "");
     } else {
       setMain("");
+      setMainCategory(null);
       setRice("잡곡밥");
       setSide("");
       setDessert("");
+      setJunoNote("");
     }
   }
 
@@ -65,7 +92,7 @@ export default function JunoPage() {
     setLoadingHistory(true);
     const { data, error } = await supabase
       .from("meals")
-      .select("date_iso,main,rice,side,dessert")
+      .select("date_iso,main,rice,side,dessert,main_category")
       .order("date_iso", { ascending: false })
       .limit(14);
 
@@ -94,9 +121,12 @@ export default function JunoPage() {
     const { error } = await supabase.from("meals").upsert({
       date_iso: dateISO,
       main: main.trim(),
+      main_category: mainCategory, 
       rice: rice.trim() || "잡곡밥",
       side: side.trim(),
       dessert: dessert.trim(),
+      juno_note: junoNote.trim() || null, 
+
     });
     setSaving(false);
 
@@ -109,8 +139,11 @@ export default function JunoPage() {
     alert("메뉴 저장 완료 ✅");
   }
 
-  const card =
-    "rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3";
+  // German engineer style: square, gridlines, no rounded
+  const card = "border border-zinc-800 bg-zinc-900/30 p-4 space-y-3";
+  const input = "w-full bg-zinc-950/60 border border-zinc-800 p-3 outline-none";
+  const btn =
+    "w-full py-3 font-semibold border border-zinc-700 bg-zinc-950/40 active:scale-[0.99]";
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
@@ -118,7 +151,9 @@ export default function JunoPage() {
         <header className="pt-2 space-y-1">
           <div className="text-xs opacity-70">/juno</div>
           <h1 className="text-2xl font-bold">Juno 메뉴 🍱</h1>
-          <p className="text-sm opacity-70">날짜 선택 → 메뉴 저장 → 남편 링크 복사</p>
+          <p className="text-sm opacity-70">
+            날짜 선택 → 메뉴 저장 → 남편 링크 복사
+          </p>
         </header>
 
         <div className={card}>
@@ -128,9 +163,42 @@ export default function JunoPage() {
               type="date"
               value={dateISO}
               onChange={(e) => onChangeDate(e.target.value)}
-              className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+              className={input}
             />
           </label>
+
+          {/* ✅ Main category buttons */}
+          <div className="space-y-2">
+            <div className="text-sm font-semibold">메인 종류</div>
+            <div className="grid grid-cols-5 gap-px bg-zinc-800">
+              {[
+                { key: "beef", label: "🐮" },
+                { key: "pork", label: "🐷" },
+                { key: "chicken", label: "🐔" },
+                { key: "fish", label: "🐟" },
+                { key: "takeaway", label: "🥡" },
+              ].map((x) => {
+                const active = mainCategory === (x.key as MainCategory);
+                return (
+                  <button
+                    key={x.key}
+                    type="button"
+                    onClick={() => setMainCategory(x.key as MainCategory)}
+                    className={[
+                      "p-3 text-lg bg-zinc-950/60 hover:bg-zinc-900 border border-zinc-800",
+                      active ? "outline outline-2 outline-amber-300/70" : "outline-none",
+                    ].join(" ")}
+                    title={x.key}
+                  >
+                    {x.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="text-xs opacity-60">
+              현재 선택: {labelEmoji(mainCategory)} {mainCategory ?? "(none)"}
+            </div>
+          </div>
 
           <label className="block">
             <div className="text-sm font-semibold mb-1">메인</div>
@@ -138,7 +206,7 @@ export default function JunoPage() {
               value={main}
               onChange={(e) => setMain(e.target.value)}
               placeholder="불고기"
-              className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+              className={input}
             />
           </label>
 
@@ -148,7 +216,7 @@ export default function JunoPage() {
               value={rice}
               onChange={(e) => setRice(e.target.value)}
               placeholder="잡곡밥"
-              className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+              className={input}
             />
           </label>
 
@@ -158,7 +226,7 @@ export default function JunoPage() {
               value={side}
               onChange={(e) => setSide(e.target.value)}
               placeholder="야채스틱 + 쌈장"
-              className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+              className={input}
             />
           </label>
 
@@ -168,26 +236,25 @@ export default function JunoPage() {
               value={dessert}
               onChange={(e) => setDessert(e.target.value)}
               placeholder="과일"
-              className="w-full rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
+              className={input}
             />
           </label>
+          <label className="block">
+  <div className="text-sm font-semibold mb-1">Juno Note (medical note)</div>
+  <textarea
+    value={junoNote}
+    onChange={(e) => setJunoNote(e.target.value)}
+    placeholder="예) Andrew sleepy. salt was too much. next time less sauce."
+    className={`${input} min-h-[120px]`}
+  />
+</label>
 
-          <button
-            type="button"
-            onClick={saveMeal}
-            disabled={saving}
-            className={`w-full rounded-xl py-3 font-semibold border border-emerald-600 bg-emerald-500/10 active:scale-[0.99] ${
-              saving ? "opacity-60" : ""
-            }`}
-          >
+
+          <button type="button" onClick={saveMeal} disabled={saving} className={btn}>
             {saving ? "저장중..." : "메뉴 저장 ✅"}
           </button>
 
-          <button
-            type="button"
-            onClick={copyLink}
-            className="w-full rounded-xl py-3 font-semibold border border-zinc-700 bg-zinc-950/40 active:scale-[0.99]"
-          >
+          <button type="button" onClick={copyLink} className={btn}>
             남편 링크 복사
           </button>
 
@@ -206,9 +273,12 @@ export default function JunoPage() {
                 <button
                   key={m.date_iso}
                   onClick={() => onChangeDate(m.date_iso)}
-                  className="w-full text-left rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 active:scale-[0.99]"
+                  className="w-full text-left border border-zinc-800 bg-zinc-950/40 p-3 active:scale-[0.99]"
                 >
-                  <div className="text-sm font-semibold">{m.date_iso}</div>
+                  <div className="text-sm font-semibold">
+                    {m.date_iso}{" "}
+                    <span className="ml-1">{labelEmoji(m.main_category)}</span>
+                  </div>
                   <div className="text-xs opacity-70 mt-1">
                     {m.main} · {m.side} · {m.dessert}
                   </div>
