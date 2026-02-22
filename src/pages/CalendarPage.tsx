@@ -444,7 +444,7 @@ export default function CalendarPage() {
           </div>
 
           <div className="p-4 border-b border-white/20">
-            <h3 className="text-sm font-semibold text-zinc-300 mb-2">Medical note 📝</h3>
+            <h3 className="text-sm font-semibold text-zinc-300 mb-2">Dinner note 📝</h3>
 
             {selectedData?.meal?.juno_note && selectedData.meal.juno_note.trim().length > 0 ? (
               <div className="text-sm text-zinc-100 whitespace-pre-wrap">{selectedData.meal.juno_note}</div>

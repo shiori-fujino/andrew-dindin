@@ -3,14 +3,13 @@ import { supabase } from "../supabase";
 
 type MainCategory = "beef" | "pork" | "chicken" | "fish" | "takeaway" | null;
 
-type MealRow = {
+type MealHistoryRow = {
   date_iso: string;
   main: string;
   rice: string;
   side: string;
   dessert: string;
   main_category: MainCategory;
-  juno_note: string | null;
 };
 
 function todayISO() {
@@ -29,10 +28,9 @@ export default function JunoPage() {
   const [side, setSide] = useState("");
   const [dessert, setDessert] = useState("");
   const [junoNote, setJunoNote] = useState(""); 
-
   const [saving, setSaving] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
-  const [history, setHistory] = useState<MealRow[]>([]);
+  const [history, setHistory] = useState<MealHistoryRow[]>([]);
 
   const andrewLink = useMemo(() => {
     return `${window.location.origin}/andrew?date=${dateISO}`;
@@ -96,8 +94,7 @@ export default function JunoPage() {
       .order("date_iso", { ascending: false })
       .limit(14);
 
-    if (!error && data) setHistory(data as MealRow[]);
-    setLoadingHistory(false);
+      if (!error && data) setHistory((data ?? []) as MealHistoryRow[]);
   }
 
   useEffect(() => {
@@ -240,7 +237,7 @@ export default function JunoPage() {
             />
           </label>
           <label className="block">
-  <div className="text-sm font-semibold mb-1">Juno Note (medical note)</div>
+  <div className="text-sm font-semibold mb-1">Dinner Note</div>
   <textarea
     value={junoNote}
     onChange={(e) => setJunoNote(e.target.value)}

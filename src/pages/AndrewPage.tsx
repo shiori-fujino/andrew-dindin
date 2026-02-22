@@ -7,6 +7,7 @@ type MealRow = {
   rice: string;
   side: string;
   dessert: string;
+  juno_note?: string | null;
 };
 
 type ReviewRow = {
@@ -99,7 +100,7 @@ export default function AndrewPage() {
     setLoadingHistory(true);
     const { data, error } = await supabase
       .from("meals")
-      .select("date_iso,main,rice,side,dessert")
+      .select("date_iso,main,rice,side,dessert, juno_note")
       .order("date_iso", { ascending: false })
       .limit(14);
 
@@ -112,7 +113,7 @@ export default function AndrewPage() {
 
     const mealRes = await supabase
       .from("meals")
-      .select("date_iso,main,rice,side,dessert")
+      .select("date_iso,main,rice,side,dessert,juno_note")
       .eq("date_iso", date)
       .maybeSingle();
 
@@ -124,7 +125,7 @@ export default function AndrewPage() {
 
     const reviewRes = await supabase
       .from("reviews")
-      .select("date_iso,main_rating,main_comment,side_rating,side_comment,dessert_rating,dessert_comment")
+      .select("date_iso,main_rating,main_comment,side_rating,side_comment,dessert_rating,dessert_comment,juno_note")
       .eq("date_iso", date)
       .maybeSingle();
 
@@ -222,6 +223,18 @@ export default function AndrewPage() {
           ) : (
             <>
               <div className="font-semibold">老公，今晚吃得好吗 ？</div>
+              {meal?.juno_note?.trim() ? (
+  <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
+    <div className="text-sm font-semibold mb-1">今日的故事</div>
+    <div className="text-sm opacity-90 whitespace-pre-wrap">{meal.juno_note}</div>
+  </div>
+) : (
+  <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
+    <div className="text-sm font-semibold mb-1">今日的故事</div>
+    <div className="text-sm opacity-70">今天停更。
+</div>
+  </div>
+)}
               <ul className="list-disc pl-5 text-sm opacity-90 space-y-1">
                 <li>蛋白质: {meal.main}</li>
                 <li>主食（碳水): {meal.rice}</li>
