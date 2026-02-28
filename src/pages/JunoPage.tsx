@@ -24,7 +24,6 @@ export default function JunoPage() {
   const [dateISO, setDateISO] = useState(() => todayISO());
   const [main, setMain] = useState("");
   const [mainCategory, setMainCategory] = useState<MainCategory>(null);
-  const [rice, setRice] = useState("잡곡밥");
   const [side, setSide] = useState("");
   const [dessert, setDessert] = useState("");
   const [junoNote, setJunoNote] = useState(""); 
@@ -72,14 +71,12 @@ export default function JunoPage() {
     if (!error && data) {
       setMain(data.main ?? "");
       setMainCategory((data.main_category as MainCategory) ?? null);
-      setRice(data.rice ?? "잡곡밥");
       setSide(data.side ?? "");
       setDessert(data.dessert ?? "");
       setJunoNote(data.juno_note ?? "");
     } else {
       setMain("");
       setMainCategory(null);
-      setRice("잡곡밥");
       setSide("");
       setDessert("");
       setJunoNote("");
@@ -119,7 +116,6 @@ export default function JunoPage() {
       date_iso: dateISO,
       main: main.trim(),
       main_category: mainCategory, 
-      rice: rice.trim() || "잡곡밥",
       side: side.trim(),
       dessert: dessert.trim(),
       juno_note: junoNote.trim() || null, 
@@ -198,7 +194,7 @@ export default function JunoPage() {
           </div>
 
           <label className="block">
-            <div className="text-sm font-semibold mb-1">메인</div>
+            <div className="text-sm font-semibold mb-1">단백질</div>
             <input
               value={main}
               onChange={(e) => setMain(e.target.value)}
@@ -208,17 +204,7 @@ export default function JunoPage() {
           </label>
 
           <label className="block">
-            <div className="text-sm font-semibold mb-1">밥</div>
-            <input
-              value={rice}
-              onChange={(e) => setRice(e.target.value)}
-              placeholder="잡곡밥"
-              className={input}
-            />
-          </label>
-
-          <label className="block">
-            <div className="text-sm font-semibold mb-1">사이드</div>
+            <div className="text-sm font-semibold mb-1">채소</div>
             <input
               value={side}
               onChange={(e) => setSide(e.target.value)}

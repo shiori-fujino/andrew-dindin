@@ -1,24 +1,41 @@
+// 진짜_최종_통파일.jpg (tsx임… 이름만 JPG 컨셉 ㅋㅋ)
+// - 全部中文（偏台灣用語）
+// - 只使用 1..5 分（星星）
+// - 不使用 public.reviews（你說你刪了總評）
+// - 只讀 meals、只讀寫 review_metrics
+// - 每個 metric 都是 1..5（UI + 存庫）
+//   ※ DB 端也要把 review_metrics.score check 改成 1..5（你已同意）
+
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabase";
 
 type MealRow = {
   date_iso: string;
   main: string;
-  rice: string;
   side: string;
   dessert: string;
   juno_note?: string | null;
 };
 
-type ReviewRow = {
-  date_iso: string;
-  main_rating: number;
-  main_comment: string | null;
-  side_rating: number;
-  side_comment: string | null;
-  dessert_rating: number;
-  dessert_comment: string | null;
+type Section = "main" | "side" | "dessert";
+
+type MetricDef = {
+  section: Section;
+  key: string;
+  label: string;
+  low?: string; // 1 分說明
+  high?: string; // 5 分說明
 };
+
+type MetricRow = {
+  date_iso: string; // text
+  section: Section;
+  metric_key: string;
+  score: number; // 1..5
+  note: string | null;
+};
+
+type MetricState = Record<string, number>; // `${section}.${metric_key}` -> 1..5
 
 function todayISO() {
   const d = new Date();
@@ -39,7 +56,12 @@ function setQueryDate(dateISO: string) {
   window.history.replaceState({}, "", url.toString());
 }
 
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
 function Stars({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const v = clamp(value, 1, 5);
   return (
     <div className="flex gap-1.5">
       {[1, 2, 3, 4, 5].map((n) => (
@@ -48,9 +70,10 @@ function Stars({ value, onChange }: { value: number; onChange: (v: number) => vo
           type="button"
           onClick={() => onChange(n)}
           className={`w-9 h-9 flex items-center justify-center leading-none p-0 rounded-lg active:scale-95 ${
-            n <= value ? "opacity-100" : "opacity-30"
+            n <= v ? "opacity-100" : "opacity-30"
           }`}
-          aria-label={`${n} stars`}
+          aria-label={`${n} 星`}
+          title={`${n} / 5`}
         >
           <span className="text-[18px] leading-none">⭐</span>
         </button>
@@ -59,22 +82,84 @@ function Stars({ value, onChange }: { value: number; onChange: (v: number) => vo
   );
 }
 
-// ✅ Rating conversion helpers
-// Stars UI is 1..5, DB is 0..10 (2 points per star).
-// Also supports old data saved as 1..5 by normalizing to 0..10.
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
+// ====== Metrics defs (全中文，台灣口吻) ======
+const METRICS: MetricDef[] = [
+  // MAIN / 蛋白質
+  { section: "main", key: "seasoning", label: "調味(鹹度)", low: "沒味道/太鹹", high: "剛剛好" },
+  { section: "main", key: "tenderness", label: "嫩度(咬感)", low: "太硬/爛糊", high: "完美" },
+  { section: "main", key: "doneness", label: "熟度", low: "太生/太老", high: "剛好" },
+  { section: "main", key: "juiciness", label: "多汁度", low: "乾柴", high: "爆汁" },
+  { section: "main", key: "greasiness", label: "油膩感", low: "太膩", high: "乾淨順口" },
+  { section: "main", key: "portion", label: "份量", low: "不夠", high: "剛好/滿足" },
+
+  // SIDE / 蔬菜
+  { section: "side", key: "freshness", label: "新鮮度", low: "不太行", high: "很新鮮" },
+  { section: "side", key: "texture", label: "口感(脆/軟)", low: "怪怪的", high: "剛好" },
+  { section: "side", key: "balance", label: "整體平衡", low: "不協調", high: "很順" },
+  { section: "side", key: "portion", label: "份量", low: "不夠", high: "剛好/滿足" },
+
+  // DESSERT / 甜點
+  { section: "dessert", key: "finish", label: "收尾幸福感", low: "沒感覺", high: "完美收尾" },
+];
+
+function mk(section: Section, metric_key: string) {
+  return `${section}.${metric_key}`;
 }
-function starsTo10(stars: number) {
-  return clamp(Math.round(stars) * 2, 0, 10);
+
+function defaultMetricState(): MetricState {
+  const s: MetricState = {};
+  for (const m of METRICS) s[mk(m.section, m.key)] = 3; // 預設中間 3 星
+  return s;
 }
-function normalize10(maybe10: number) {
-  // If value looks like old 1..5 data, convert to 2..10.
-  return maybe10 <= 5 ? maybe10 * 2 : maybe10;
-}
-function tenToStarsInt(score10: number) {
-  const v = normalize10(score10);
-  return clamp(Math.round(v / 2), 0, 5);
+
+function MetricBlock({
+  title,
+  section,
+  metrics,
+  setMetrics,
+}: {
+  title: string;
+  section: Section;
+  metrics: MetricState;
+  setMetrics: React.Dispatch<React.SetStateAction<MetricState>>;
+}) {
+  const list = METRICS.filter((m) => m.section === section);
+
+  return (
+    <div className="space-y-3">
+      <div className="font-semibold">{title}</div>
+
+      <div className="space-y-3">
+        {list.map((m) => {
+          const key = mk(m.section, m.key);
+          const value = clamp(metrics[key] ?? 3, 1, 5);
+
+          return (
+            <div key={key} className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <div className="text-sm font-semibold">{m.label}</div>
+                <div className="text-sm opacity-80">{value}/5</div>
+              </div>
+
+              <div className="mt-2">
+                <Stars
+                  value={value}
+                  onChange={(nv) => setMetrics((prev) => ({ ...prev, [key]: clamp(nv, 1, 5) }))}
+                />
+              </div>
+
+              {(m.low || m.high) && (
+                <div className="mt-2 text-xs opacity-70 flex justify-between gap-3">
+                  <span className="truncate">1 = {m.low ?? "低"}</span>
+                  <span className="truncate">5 = {m.high ?? "高"}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default function AndrewPage() {
@@ -84,12 +169,8 @@ export default function AndrewPage() {
   const [meal, setMeal] = useState<MealRow | null>(null);
   const [loadingMeal, setLoadingMeal] = useState(true);
 
-  const [mainRating, setMainRating] = useState(3);
-  const [mainComment, setMainComment] = useState("");
-  const [sideRating, setSideRating] = useState(3);
-  const [sideComment, setSideComment] = useState("");
-  const [dessertRating, setDessertRating] = useState(3);
-  const [dessertComment, setDessertComment] = useState("");
+  const [metrics, setMetrics] = useState<MetricState>(() => defaultMetricState());
+  const [loadingMetrics, setLoadingMetrics] = useState(true);
 
   const [saving, setSaving] = useState(false);
 
@@ -104,11 +185,36 @@ export default function AndrewPage() {
       .order("date_iso", { ascending: false })
       .limit(14);
 
-    if (!error && data) setHistory(data as MealRow[]);
+    if (error) console.warn("loadHistory error:", error.message);
+    if (data) setHistory(data as MealRow[]);
     setLoadingHistory(false);
   }
 
-  async function loadMealAndReview(date: string) {
+  async function loadMetrics(date: string) {
+    setLoadingMetrics(true);
+
+    const { data, error } = await supabase
+      .from("review_metrics")
+      .select("date_iso,section,metric_key,score,note")
+      .eq("date_iso", date);
+
+    if (error) {
+      console.warn("loadMetrics error:", error.message);
+      setMetrics(defaultMetricState());
+      setLoadingMetrics(false);
+      return;
+    }
+
+    const next = defaultMetricState();
+    (data as MetricRow[] | null)?.forEach((r) => {
+      next[mk(r.section, r.metric_key)] = clamp(r.score, 1, 5);
+    });
+
+    setMetrics(next);
+    setLoadingMetrics(false);
+  }
+
+  async function loadMeal(date: string) {
     setLoadingMeal(true);
 
     const mealRes = await supabase
@@ -117,79 +223,54 @@ export default function AndrewPage() {
       .eq("date_iso", date)
       .maybeSingle();
 
-    if (!mealRes.error && mealRes.data) {
-      setMeal(mealRes.data as MealRow);
-    } else {
-      setMeal(null);
-    }
-
-    const reviewRes = await supabase
-      .from("reviews")
-      .select("date_iso,main_rating,main_comment,side_rating,side_comment,dessert_rating,dessert_comment,juno_note")
-      .eq("date_iso", date)
-      .maybeSingle();
-
-    if (!reviewRes.error && reviewRes.data) {
-      const r = reviewRes.data as ReviewRow;
-
-      // ✅ DB(0..10) -> Stars UI(0..5)
-      setMainRating(tenToStarsInt(r.main_rating));
-      setMainComment(r.main_comment ?? "");
-      setSideRating(tenToStarsInt(r.side_rating));
-      setSideComment(r.side_comment ?? "");
-      setDessertRating(tenToStarsInt(r.dessert_rating));
-      setDessertComment(r.dessert_comment ?? "");
-    } else {
-      setMainRating(3);
-      setMainComment("");
-      setSideRating(3);
-      setSideComment("");
-      setDessertRating(3);
-      setDessertComment("");
-    }
+    if (!mealRes.error && mealRes.data) setMeal(mealRes.data as MealRow);
+    else setMeal(null);
 
     setLoadingMeal(false);
   }
 
   useEffect(() => {
     loadHistory();
-    loadMealAndReview(dateISO);
+    loadMeal(dateISO);
+    loadMetrics(dateISO);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function onChangeDate(next: string) {
     setDateISO(next);
     setQueryDate(next);
-    await loadMealAndReview(next);
+    await loadMeal(next);
+    await loadMetrics(next);
   }
 
-  async function saveReview() {
+  async function saveMetrics() {
     if (!meal) {
-      alert("這天沒有菜單，請 Juno 先去 /juno 輸入～");
+      alert("今天沒有菜單，請 Juno 先去 /juno 輸入～");
       return;
     }
 
     setSaving(true);
 
-    // ✅ Stars UI(1..5) -> DB(0..10)
-    const { error } = await supabase.from("reviews").upsert({
+    const metricRows = METRICS.map((m) => ({
       date_iso: dateISO,
-      main_rating: starsTo10(mainRating),
-      main_comment: mainComment.trim() || null,
-      side_rating: starsTo10(sideRating),
-      side_comment: sideComment.trim() || null,
-      dessert_rating: starsTo10(dessertRating),
-      dessert_comment: dessertComment.trim() || null,
-    });
+      section: m.section,
+      metric_key: m.key,
+      score: clamp(metrics[mk(m.section, m.key)] ?? 3, 1, 5),
+      note: null,
+    }));
+
+    const res = await supabase
+      .from("review_metrics")
+      .upsert(metricRows, { onConflict: "date_iso,section,metric_key" });
 
     setSaving(false);
 
-    if (error) {
-      alert(error.message);
+    if (res.error) {
+      alert("儲存失敗: " + res.error.message);
       return;
     }
 
-    alert("저장 완료 ✅");
+    alert("已儲存 ✅");
   }
 
   const card = "rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3";
@@ -199,8 +280,8 @@ export default function AndrewPage() {
       <div className="mx-auto max-w-md p-5 space-y-4 min-w-0">
         <header className="pt-2 space-y-1">
           <div className="text-xs opacity-70">/andrew</div>
-          <h1 className="text-2xl font-bold">Andrew的点评专区 📝</h1>
-          <p className="text-sm opacity-70">你越毒舌，我越进步。来吧～</p>
+          <h1 className="text-2xl font-bold">Andrew 的評分區 📝</h1>
+          <p className="text-sm opacity-70">你越毒舌，我越進步。來吧～</p>
         </header>
 
         <div className={card}>
@@ -217,86 +298,62 @@ export default function AndrewPage() {
 
         <div className={card}>
           {loadingMeal ? (
-            <div className="text-sm opacity-70">加载中…</div>
+            <div className="text-sm opacity-70">載入中…</div>
           ) : !meal ? (
-            <div className="text-sm opacity-70">이 날짜 메뉴가 없음. Juno가 `/juno`에서 저장해야 함.</div>
+            <div className="text-sm opacity-70">這天沒有菜單。請 Juno 先在 `/juno` 存好。</div>
           ) : (
             <>
-              <div className="font-semibold">老公，今晚吃得好吗 ？</div>
+              <div className="font-semibold">老公，今天吃得還行嗎？</div>
+
               {meal?.juno_note?.trim() ? (
-  <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
-    <div className="text-sm font-semibold mb-1">今日的故事</div>
-    <div className="text-sm opacity-90 whitespace-pre-wrap">{meal.juno_note}</div>
-  </div>
-) : (
-  <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
-    <div className="text-sm font-semibold mb-1">今日的故事</div>
-    <div className="text-sm opacity-70">今天停更。
-</div>
-  </div>
-)}
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
+                  <div className="text-sm font-semibold mb-1">今日小劇場</div>
+                  <div className="text-sm opacity-90 whitespace-pre-wrap">{meal.juno_note}</div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
+                  <div className="text-sm font-semibold mb-1">今日小劇場</div>
+                  <div className="text-sm opacity-70">今天停更。</div>
+                </div>
+              )}
+
               <ul className="list-disc pl-5 text-sm opacity-90 space-y-1">
-                <li>蛋白质: {meal.main}</li>
-                <li>主食（碳水): {meal.rice}</li>
-                <li>蔬菜: {meal.side}</li>
-                <li>甜点: {meal.dessert}</li>
+                <li>蛋白質：{meal.main}</li>
+                <li>蔬菜：{meal.side}</li>
+                <li>甜點：{meal.dessert}</li>
               </ul>
             </>
           )}
         </div>
 
         <div className={card}>
-          <div className="font-semibold">1) 蛋白质</div>
-          <Stars value={mainRating} onChange={setMainRating} />
-          <textarea
-            className="w-full min-w-0 rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
-            rows={2}
-            placeholder="备注（可选）示例: 肉如果再软一点就满分啦！"
-            value={mainComment}
-            onChange={(e) => setMainComment(e.target.value)}
-          />
-        </div>
-
-        <div className={card}>
-          <div className="font-semibold">2) 蔬菜</div>
-          <Stars value={sideRating} onChange={setSideRating} />
-          <textarea
-            className="w-full min-w-0 rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
-            rows={2}
-            placeholder="备注（可选）示例: 感觉今天少了一点点用心…下次加一勺爱好吗？"
-            value={sideComment}
-            onChange={(e) => setSideComment(e.target.value)}
-          />
-        </div>
-
-        <div className={card}>
-          <div className="font-semibold">3) 甜点</div>
-          <Stars value={dessertRating} onChange={setDessertRating} />
-          <textarea
-            className="w-full min-w-0 rounded-xl bg-zinc-950/60 border border-zinc-800 p-3 outline-none"
-            rows={2}
-            placeholder="备注（可选）示例: 我不喜欢！！下次不要再做啦～"
-            value={dessertComment}
-            onChange={(e) => setDessertComment(e.target.value)}
-          />
+          {loadingMetrics ? (
+            <div className="text-sm opacity-70">載入中（細項）…</div>
+          ) : (
+            <div className="space-y-6">
+              <MetricBlock title="🥩 蛋白質（每項 5 星）" section="main" metrics={metrics} setMetrics={setMetrics} />
+              <MetricBlock title="🥬 蔬菜（每項 5 星）" section="side" metrics={metrics} setMetrics={setMetrics} />
+              <MetricBlock title="🍰 甜點（每項 5 星）" section="dessert" metrics={metrics} setMetrics={setMetrics} />
+            </div>
+          )}
         </div>
 
         <button
-          onClick={saveReview}
+          onClick={saveMetrics}
           disabled={saving}
           className={`w-full rounded-xl py-4 font-semibold border border-emerald-600 bg-emerald-500/10 active:scale-[0.99] ${
             saving ? "opacity-60" : ""
           }`}
         >
-          {saving ? "保存中…" : "保存一下 ✅"}
+          {saving ? "儲存中…" : "儲存一下 ✅"}
         </button>
 
         <div className={card}>
-          <div className="font-semibold">最近14天菜单记录</div>
+          <div className="font-semibold">最近 14 天菜單</div>
           {loadingHistory ? (
-            <div className="text-sm opacity-70">加载中…</div>
+            <div className="text-sm opacity-70">載入中…</div>
           ) : history.length === 0 ? (
-            <div className="text-sm opacity-70">暂无内容。</div>
+            <div className="text-sm opacity-70">暫無內容。</div>
           ) : (
             <div className="space-y-2">
               {history.map((m) => (
