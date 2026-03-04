@@ -1,377 +1,573 @@
-// 진짜_최종_통파일.jpg (tsx임… 이름만 JPG 컨셉 ㅋㅋ)
-// - 全部中文（偏台灣用語）
-// - 只使用 1..5 分（星星）
-// - 不使用 public.reviews（你說你刪了總評）
-// - 只讀 meals、只讀寫 review_metrics
-// - 每個 metric 都是 1..5（UI + 存庫）
-//   ※ DB 端也要把 review_metrics.score check 改成 1..5（你已同意）
-
+// PregLogPage.tsx
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../supabase";
+import { createClient, type Session } from "@supabase/supabase-js";
 
-type MealRow = {
-  date_iso: string;
-  main: string;
-  side: string;
-  dessert: string;
-  juno_note?: string | null;
-};
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-type Section = "main" | "side" | "dessert";
+// ----- Fixed timeline inputs (per your note)
+const TODAY_ISO = "2026-03-04";        // today (Sydney) for consistent counters
+const SUM30_DATE_ISO = "2026-07-25";   // SUM 30 event date
+const GA_WEEKS = 4;
+const GA_DAYS = 4;                    // 4w4d on TODAY
 
-type MetricDef = {
-  section: Section;
-  key: string;
-  label: string;
-  low?: string; // 1 分說明
-  high?: string; // 5 分說明
-};
-
-type MetricRow = {
-  date_iso: string; // text
-  section: Section;
-  metric_key: string;
-  score: number; // 1..5
+type PregLogRow = {
+  id: number;
+  log_date: string; // YYYY-MM-DD
+  mood: number;     // 1..5
+  cravings: string[] | null;
   note: string | null;
+  created_at: string;
+  updated_at: string;
+  user_id?: string; // if your table has it (owner write)
 };
 
-type MetricState = Record<string, number>; // `${section}.${metric_key}` -> 1..5
-
-function todayISO() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
+function parseISODate(iso: string) {
+  // Treat as UTC midnight to avoid timezone off-by-one issues.
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+function formatISODate(d: Date) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
-
-function getDateFromQuery() {
-  const url = new URL(window.location.href);
-  return url.searchParams.get("date") || todayISO();
+function daysBetween(aISO: string, bISO: string) {
+  const a = parseISODate(aISO).getTime();
+  const b = parseISODate(bISO).getTime();
+  return Math.round((b - a) / 86400000);
 }
-
-function setQueryDate(dateISO: string) {
-  const url = new URL(window.location.href);
-  url.searchParams.set("date", dateISO);
-  window.history.replaceState({}, "", url.toString());
+function addDays(iso: string, days: number) {
+  const t = parseISODate(iso).getTime() + days * 86400000;
+  return formatISODate(new Date(t));
 }
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
+function clampMood(n: number) {
+  return Math.max(1, Math.min(5, n));
 }
+function cleanTags(input: string) {
+  // split by comma, trim, lower, unique
+  const parts = input
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => s.toLowerCase());
 
-function Stars({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  const v = clamp(value, 1, 5);
-  return (
-    <div className="flex gap-1.5">
-      {[1, 2, 3, 4, 5].map((n) => (
-        <button
-          key={n}
-          type="button"
-          onClick={() => onChange(n)}
-          className={`w-9 h-9 flex items-center justify-center leading-none p-0 rounded-lg active:scale-95 ${
-            n <= v ? "opacity-100" : "opacity-30"
-          }`}
-          aria-label={`${n} 星`}
-          title={`${n} / 5`}
-        >
-          <span className="text-[18px] leading-none">⭐</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// ====== Metrics defs (全中文，台灣口吻) ======
-const METRICS: MetricDef[] = [
-  // MAIN / 蛋白質
-  { section: "main", key: "seasoning", label: "調味(鹹度)", low: "沒味道/太鹹", high: "剛剛好" },
-  { section: "main", key: "tenderness", label: "嫩度(咬感)", low: "太硬/爛糊", high: "完美" },
-  { section: "main", key: "doneness", label: "熟度", low: "太生/太老", high: "剛好" },
-  { section: "main", key: "juiciness", label: "多汁度", low: "乾柴", high: "爆汁" },
-  { section: "main", key: "greasiness", label: "油膩感", low: "太膩", high: "乾淨順口" },
-  { section: "main", key: "portion", label: "份量", low: "不夠", high: "剛好/滿足" },
-
-  // SIDE / 蔬菜
-  { section: "side", key: "freshness", label: "新鮮度", low: "不太行", high: "很新鮮" },
-  { section: "side", key: "texture", label: "口感(脆/軟)", low: "怪怪的", high: "剛好" },
-  { section: "side", key: "balance", label: "整體平衡", low: "不協調", high: "很順" },
-  { section: "side", key: "portion", label: "份量", low: "不夠", high: "剛好/滿足" },
-
-  // DESSERT / 甜點
-  { section: "dessert", key: "finish", label: "收尾幸福感", low: "沒感覺", high: "完美收尾" },
-];
-
-function mk(section: Section, metric_key: string) {
-  return `${section}.${metric_key}`;
-}
-
-function defaultMetricState(): MetricState {
-  const s: MetricState = {};
-  for (const m of METRICS) s[mk(m.section, m.key)] = 3; // 預設中間 3 星
-  return s;
-}
-
-function MetricBlock({
-  title,
-  section,
-  metrics,
-  setMetrics,
-}: {
-  title: string;
-  section: Section;
-  metrics: MetricState;
-  setMetrics: React.Dispatch<React.SetStateAction<MetricState>>;
-}) {
-  const list = METRICS.filter((m) => m.section === section);
-
-  return (
-    <div className="space-y-3">
-      <div className="font-semibold">{title}</div>
-
-      <div className="space-y-3">
-        {list.map((m) => {
-          const key = mk(m.section, m.key);
-          const value = clamp(metrics[key] ?? 3, 1, 5);
-
-          return (
-            <div key={key} className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
-              <div className="flex items-baseline justify-between gap-3">
-                <div className="text-sm font-semibold">{m.label}</div>
-                <div className="text-sm opacity-80">{value}/5</div>
-              </div>
-
-              <div className="mt-2">
-                <Stars
-                  value={value}
-                  onChange={(nv) => setMetrics((prev) => ({ ...prev, [key]: clamp(nv, 1, 5) }))}
-                />
-              </div>
-
-              {(m.low || m.high) && (
-                <div className="mt-2 text-xs opacity-70 flex justify-between gap-3">
-                  <span className="truncate">1 = {m.low ?? "低"}</span>
-                  <span className="truncate">5 = {m.high ?? "高"}</span>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-export default function AndrewPage() {
-  const initialDate = useMemo(() => getDateFromQuery(), []);
-  const [dateISO, setDateISO] = useState(initialDate);
-
-  const [meal, setMeal] = useState<MealRow | null>(null);
-  const [loadingMeal, setLoadingMeal] = useState(true);
-
-  const [metrics, setMetrics] = useState<MetricState>(() => defaultMetricState());
-  const [loadingMetrics, setLoadingMetrics] = useState(true);
-
-  const [saving, setSaving] = useState(false);
-
-  const [history, setHistory] = useState<MealRow[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(true);
-
-  async function loadHistory() {
-    setLoadingHistory(true);
-    const { data, error } = await supabase
-      .from("meals")
-      .select("date_iso,main,rice,side,dessert, juno_note")
-      .order("date_iso", { ascending: false })
-      .limit(14);
-
-    if (error) console.warn("loadHistory error:", error.message);
-    if (data) setHistory(data as MealRow[]);
-    setLoadingHistory(false);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of parts) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
   }
+  return out;
+}
 
-  async function loadMetrics(date: string) {
-    setLoadingMetrics(true);
+export default function PregLogPage() {
+  // --- auth (admin only)
+  const [session, setSession] = useState<Session | null>(null);
+  const signedIn = !!session;
+
+  // --- public feed
+  const [rows, setRows] = useState<PregLogRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // --- editor
+  const [logDate, setLogDate] = useState(TODAY_ISO);
+  const [mood, setMood] = useState<number>(3);
+  const [note, setNote] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
+
+  // --- admin sign-in UI (tiny)
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+
+  // ---- counters
+  const sum30DDay = useMemo(() => daysBetween(TODAY_ISO, SUM30_DATE_ISO), []);
+  const dueISO = useMemo(() => {
+    const gaDays = GA_WEEKS * 7 + GA_DAYS; // 32
+    const remaining = 280 - gaDays;        // 248
+    return addDays(TODAY_ISO, remaining);
+  }, []);
+  const dueDDay = useMemo(() => daysBetween(TODAY_ISO, dueISO), [dueISO]);
+
+  // ---- craving cloud
+  const cravingCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      for (const t of r.cravings ?? []) {
+        const k = (t ?? "").trim().toLowerCase();
+        if (!k) continue;
+        m.set(k, (m.get(k) ?? 0) + 1);
+      }
+    }
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).slice(0, 24);
+  }, [rows]);
+
+  // ---- streak (Duolingo vibe)
+  const streak = useMemo(() => {
+    const set = new Set(rows.map((r) => r.log_date));
+    let cur = TODAY_ISO;
+    let s = 0;
+    while (set.has(cur)) {
+      s += 1;
+      cur = addDays(cur, -1);
+    }
+    return s;
+  }, [rows]);
+
+  async function loadFeed() {
+    setLoading(true);
+    setMsg(null);
 
     const { data, error } = await supabase
-      .from("review_metrics")
-      .select("date_iso,section,metric_key,score,note")
-      .eq("date_iso", date);
+      .from("preg_log")
+      .select("*")
+      .order("log_date", { ascending: false })
+      .limit(240);
 
     if (error) {
-      console.warn("loadMetrics error:", error.message);
-      setMetrics(defaultMetricState());
-      setLoadingMetrics(false);
+      setMsg(error.message);
+      setRows([]);
+    } else {
+      setRows((data ?? []) as PregLogRow[]);
+    }
+    setLoading(false);
+  }
+
+  async function loadMyDraft(dateISO: string) {
+    setMsg(null);
+    setLogDate(dateISO);
+
+    // If you’re not signed in, just reset editor to blank for that date
+    if (!signedIn) {
+      setMood(3);
+      setTags([]);
+      setNote("");
       return;
     }
 
-    const next = defaultMetricState();
-    (data as MetricRow[] | null)?.forEach((r) => {
-      next[mk(r.section, r.metric_key)] = clamp(r.score, 1, 5);
-    });
-
-    setMetrics(next);
-    setLoadingMetrics(false);
-  }
-
-  async function loadMeal(date: string) {
-    setLoadingMeal(true);
-
-    const mealRes = await supabase
-      .from("meals")
-      .select("date_iso,main,rice,side,dessert,juno_note")
-      .eq("date_iso", date)
+    // If your RLS blocks reading own-only, this still works because you can read public anyway.
+    const { data, error } = await supabase
+      .from("preg_log")
+      .select("*")
+      .eq("log_date", dateISO)
       .maybeSingle();
 
-    if (!mealRes.error && mealRes.data) setMeal(mealRes.data as MealRow);
-    else setMeal(null);
+    if (error) return setMsg(error.message);
 
-    setLoadingMeal(false);
+    if (data) {
+      const r = data as PregLogRow;
+      setMood(clampMood(Number(r.mood)));
+      setTags((r.cravings ?? []).map((x) => String(x)));
+      setNote(r.note ?? "");
+    } else {
+      setMood(3);
+      setTags([]);
+      setNote("");
+    }
   }
 
+  async function save() {
+    setMsg(null);
+    if (!signedIn) return setMsg("Admin only: sign in to write.");
+
+    const payload = {
+      log_date: logDate,
+      mood: clampMood(Number(mood)),
+      cravings: tags,
+      note: note,
+      // user_id is default auth.uid() in your table; leaving it out is fine.
+    };
+
+    // If your schema is UNIQUE(user_id, log_date), upsert might require user_id in conflict.
+    // If you kept UNIQUE(log_date) only (single-user table), this is perfect.
+    // For safety, try both patterns: first (user_id,log_date), fallback (log_date).
+    let errorMessage: string | null = null;
+
+    const up1 = await supabase.from("preg_log").upsert(payload as any, {
+      onConflict: "user_id,log_date",
+    });
+    if (up1.error) {
+      const up2 = await supabase.from("preg_log").upsert(payload as any, {
+        onConflict: "log_date",
+      });
+      if (up2.error) errorMessage = up2.error.message;
+    }
+
+    if (errorMessage) return setMsg(errorMessage);
+
+    await loadFeed();
+    setMsg("Saved.");
+  }
+
+  // ---- auth wiring
   useEffect(() => {
-    loadHistory();
-    loadMeal(dateISO);
-    loadMetrics(dateISO);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, sess) => setSession(sess));
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function onChangeDate(next: string) {
-    setDateISO(next);
-    setQueryDate(next);
-    await loadMeal(next);
-    await loadMetrics(next);
+  useEffect(() => {
+    loadFeed();
+  }, []);
+
+  async function sendCode() {
+    setMsg(null);
+    const e = email.trim();
+    if (!e) return setMsg("Enter email.");
+
+    // Supabase will email a link; in many setups it also includes a code.
+    const { error } = await supabase.auth.signInWithOtp({
+      email: e,
+      options: { emailRedirectTo: window.location.origin },
+    });
+
+    if (error) setMsg(error.message);
+    else setMsg("Email sent. Use the code (or click the link).");
   }
 
-  async function saveMetrics() {
-    if (!meal) {
-      alert("今天沒有菜單，請 Juno 先去 /juno 輸入～");
-      return;
+  async function verifyCode() {
+    setMsg(null);
+    const e = email.trim();
+    const c = code.trim();
+    if (!e || !c) return setMsg("Enter email + code.");
+
+    const { error } = await supabase.auth.verifyOtp({
+      email: e,
+      token: c,
+      type: "email",
+    });
+
+    if (error) setMsg(error.message);
+    else {
+      setMsg("Signed in.");
+      setShowAdmin(false);
+      await loadMyDraft(logDate);
     }
-
-    setSaving(true);
-
-    const metricRows = METRICS.map((m) => ({
-      date_iso: dateISO,
-      section: m.section,
-      metric_key: m.key,
-      score: clamp(metrics[mk(m.section, m.key)] ?? 3, 1, 5),
-      note: null,
-    }));
-
-    const res = await supabase
-      .from("review_metrics")
-      .upsert(metricRows, { onConflict: "date_iso,section,metric_key" });
-
-    setSaving(false);
-
-    if (res.error) {
-      alert("儲存失敗: " + res.error.message);
-      return;
-    }
-
-    alert("已儲存 ✅");
   }
 
-  const card = "rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3";
+  async function signOut() {
+    await supabase.auth.signOut();
+    setMsg("Signed out.");
+  }
+
+  function addTagsFromInput() {
+    const newTags = cleanTags(tagInput);
+    if (!newTags.length) return;
+    const next = Array.from(new Set([...tags, ...newTags]));
+    setTags(next);
+    setTagInput("");
+  }
+
+  function removeTag(t: string) {
+    setTags(tags.filter((x) => x !== t));
+  }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-50">
-      <div className="mx-auto max-w-md p-5 space-y-4 min-w-0">
-        <header className="pt-2 space-y-1">
-          <div className="text-xs opacity-70">/andrew</div>
-          <h1 className="text-2xl font-bold">Andrew 的評分區 📝</h1>
-          <p className="text-sm opacity-70">你越毒舌，我越進步。來吧～</p>
-        </header>
+    <div style={styles.page}>
+      <header style={styles.header}>
+        <div>
+          <div style={styles.title}>Preg Log</div>
+          <div style={styles.sub}>
+            Public read. Admin write. One log per day.
+          </div>
+        </div>
 
-        <div className={card}>
-          <label className="block">
-            <div className="text-sm font-semibold mb-1">日期</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={styles.badge}>
+            Streak: <b>{streak}</b>
+          </div>
+          <div style={styles.badge}>
+            SUM 30 D-{Math.max(0, sum30DDay)}
+          </div>
+          <div style={styles.badge}>
+            Due D-{Math.max(0, dueDDay)} <span style={{ opacity: 0.7 }}>({dueISO})</span>
+          </div>
+
+          {signedIn ? (
+            <button style={styles.btn} onClick={signOut}>
+              Sign out
+            </button>
+          ) : (
+            <button style={styles.btn} onClick={() => setShowAdmin((v) => !v)}>
+              Admin
+            </button>
+          )}
+        </div>
+      </header>
+
+      {msg && <div style={styles.msg}>{msg}</div>}
+
+      {/* Admin box (tiny) */}
+      {showAdmin && !signedIn && (
+        <section style={styles.card}>
+          <div style={styles.cardTitle}>Admin sign-in (email OTP)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8 }}>
+            <input
+              style={styles.input}
+              placeholder="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <input
+              style={styles.input}
+              placeholder="code (if provided)"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={styles.btn} onClick={sendCode}>Send</button>
+              <button style={styles.btn} onClick={verifyCode}>Verify</button>
+            </div>
+          </div>
+          <div style={{ marginTop: 8, opacity: 0.7, fontSize: 12 }}>
+            Tip: if code is missing, just click the email link in the same browser.
+          </div>
+        </section>
+      )}
+
+      {/* Craving cloud */}
+      <section style={styles.card}>
+        <div style={styles.cardTitle}>Craving cloud</div>
+        {cravingCounts.length === 0 ? (
+          <div style={{ opacity: 0.7 }}>No cravings yet.</div>
+        ) : (
+          <div style={styles.wrap}>
+            {cravingCounts.map(([tag, count]) => (
+              <span key={tag} style={styles.pill}>
+                {tag} <span style={{ opacity: 0.65 }}>({count})</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Editor */}
+      <section style={styles.card}>
+        <div style={styles.rowBetween}>
+          <div style={styles.cardTitle}>Today’s entry</div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               type="date"
-              value={dateISO}
-              onChange={(e) => onChangeDate(e.target.value)}
-              className="w-full h-12 px-3 rounded-xl bg-zinc-950/60 border border-zinc-800 outline-none"
+              style={{ ...styles.input, width: 160 }}
+              value={logDate}
+              onChange={(e) => loadMyDraft(e.target.value)}
             />
-          </label>
+            <button style={{ ...styles.btn, opacity: signedIn ? 1 : 0.5 }} onClick={save} disabled={!signedIn}>
+              Save
+            </button>
+          </div>
         </div>
 
-        <div className={card}>
-          {loadingMeal ? (
-            <div className="text-sm opacity-70">載入中…</div>
-          ) : !meal ? (
-            <div className="text-sm opacity-70">這天沒有菜單。請 Juno 先在 `/juno` 存好。</div>
-          ) : (
-            <>
-              <div className="font-semibold">老公，今天吃得還行嗎？</div>
+        <div style={styles.grid}>
+          <div style={styles.label}>Mood</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <input
+              type="range"
+              min={1}
+              max={5}
+              value={mood}
+              onChange={(e) => setMood(clampMood(Number(e.target.value)))}
+              disabled={!signedIn}
+              style={{ width: 240 }}
+            />
+            <div style={{ fontWeight: 800, width: 18 }}>{mood}</div>
+            <div style={{ opacity: 0.7, fontSize: 12 }}>
+              {mood === 1 ? "super bad" : mood === 5 ? "super good" : ""}
+            </div>
+          </div>
 
-              {meal?.juno_note?.trim() ? (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
-                  <div className="text-sm font-semibold mb-1">今日小劇場</div>
-                  <div className="text-sm opacity-90 whitespace-pre-wrap">{meal.juno_note}</div>
-                </div>
+          <div style={styles.label}>Cravings</div>
+          <div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                style={styles.input}
+                placeholder='type + Enter (or commas): "dumpling, pho"'
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addTagsFromInput();
+                  }
+                }}
+                disabled={!signedIn}
+              />
+              <button style={{ ...styles.btn, opacity: signedIn ? 1 : 0.5 }} onClick={addTagsFromInput} disabled={!signedIn}>
+                Add
+              </button>
+            </div>
+            <div style={{ ...styles.wrap, marginTop: 10 }}>
+              {tags.length === 0 ? (
+                <span style={{ opacity: 0.7 }}>No tags.</span>
               ) : (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
-                  <div className="text-sm font-semibold mb-1">今日小劇場</div>
-                  <div className="text-sm opacity-70">今天停更。</div>
-                </div>
+                tags.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => removeTag(t)}
+                    disabled={!signedIn}
+                    style={{
+                      ...styles.pillBtn,
+                      cursor: signedIn ? "pointer" : "default",
+                      opacity: signedIn ? 1 : 0.6,
+                    }}
+                    title={signedIn ? "Remove" : ""}
+                  >
+                    {t} <span style={{ opacity: 0.65 }}>×</span>
+                  </button>
+                ))
               )}
-
-              <ul className="list-disc pl-5 text-sm opacity-90 space-y-1">
-                <li>蛋白質：{meal.main}</li>
-                <li>蔬菜：{meal.side}</li>
-                <li>甜點：{meal.dessert}</li>
-              </ul>
-            </>
-          )}
-        </div>
-
-        <div className={card}>
-          {loadingMetrics ? (
-            <div className="text-sm opacity-70">載入中（細項）…</div>
-          ) : (
-            <div className="space-y-6">
-              <MetricBlock title="🥩 蛋白質（每項 5 星）" section="main" metrics={metrics} setMetrics={setMetrics} />
-              <MetricBlock title="🥬 蔬菜（每項 5 星）" section="side" metrics={metrics} setMetrics={setMetrics} />
-              <MetricBlock title="🍰 甜點（每項 5 星）" section="dessert" metrics={metrics} setMetrics={setMetrics} />
             </div>
-          )}
+          </div>
+
+          <div style={{ ...styles.label, alignSelf: "start", paddingTop: 6 }}>Note</div>
+          <textarea
+            style={{ ...styles.input, minHeight: 140, resize: "vertical" }}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="blog note..."
+            disabled={!signedIn}
+          />
         </div>
 
-        <button
-          onClick={saveMetrics}
-          disabled={saving}
-          className={`w-full rounded-xl py-4 font-semibold border border-emerald-600 bg-emerald-500/10 active:scale-[0.99] ${
-            saving ? "opacity-60" : ""
-          }`}
-        >
-          {saving ? "儲存中…" : "儲存一下 ✅"}
-        </button>
+        {!signedIn && (
+          <div style={{ marginTop: 10, opacity: 0.7, fontSize: 12 }}>
+            Reading is public. Writing is admin-only.
+          </div>
+        )}
+      </section>
 
-        <div className={card}>
-          <div className="font-semibold">最近 14 天菜單</div>
-          {loadingHistory ? (
-            <div className="text-sm opacity-70">載入中…</div>
-          ) : history.length === 0 ? (
-            <div className="text-sm opacity-70">暫無內容。</div>
-          ) : (
-            <div className="space-y-2">
-              {history.map((m) => (
-                <button
-                  key={m.date_iso}
-                  onClick={() => onChangeDate(m.date_iso)}
-                  className="w-full text-left rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 active:scale-[0.99]"
-                >
-                  <div className="text-sm font-semibold">{m.date_iso}</div>
-                  <div className="text-xs opacity-70 mt-1">
-                    {m.main} · {m.side} · {m.dessert}
+      {/* Feed */}
+      <section style={styles.card}>
+        <div style={styles.rowBetween}>
+          <div style={styles.cardTitle}>Timeline</div>
+          <button style={styles.btn} onClick={loadFeed} disabled={loading}>
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+
+        {loading ? (
+          <div style={{ opacity: 0.7, marginTop: 8 }}>Loading…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ opacity: 0.7, marginTop: 8 }}>No entries yet.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+            {rows.map((r) => (
+              <article key={r.id} style={styles.post}>
+                <div style={styles.rowBetween}>
+                  <div style={{ fontWeight: 800 }}>{r.log_date}</div>
+                  <div style={styles.badge}>mood {r.mood}/5</div>
+                </div>
+
+                {r.cravings && r.cravings.length > 0 && (
+                  <div style={{ ...styles.wrap, marginTop: 8 }}>
+                    {r.cravings.map((t) => (
+                      <span key={t} style={styles.pill}>{t}</span>
+                    ))}
                   </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+                )}
+
+                {r.note && (
+                  <div style={{ marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                    {r.note}
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
+
+const styles: Record<string, React.CSSProperties> = {
+  page: {
+    maxWidth: 900,
+    margin: "0 auto",
+    padding: 16,
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  title: { fontSize: 22, fontWeight: 900 },
+  sub: { fontSize: 12, opacity: 0.7, marginTop: 2 },
+  card: {
+    marginTop: 14,
+    padding: 14,
+    border: "1px solid #eee",
+    borderRadius: 16,
+    background: "white",
+  },
+  cardTitle: { fontWeight: 900, marginBottom: 10 },
+  msg: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 12,
+    background: "#fff3cd",
+    border: "1px solid #ffe69c",
+  },
+  btn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid #ddd",
+    background: "white",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  input: {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid #ddd",
+    background: "white",
+    boxSizing: "border-box",
+  },
+  badge: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid #eee",
+    background: "#fafafa",
+    fontSize: 12,
+    whiteSpace: "nowrap",
+  },
+  pill: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid #eee",
+    background: "#fafafa",
+    fontSize: 13,
+  },
+  pillBtn: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid #eee",
+    background: "#fafafa",
+    fontSize: 13,
+  },
+  wrap: { display: "flex", flexWrap: "wrap", gap: 8 },
+  rowBetween: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "120px 1fr",
+    gap: 12,
+    alignItems: "center",
+  },
+  label: { opacity: 0.75, fontWeight: 700 },
+  post: {
+    padding: 12,
+    border: "1px solid #eee",
+    borderRadius: 14,
+  },
+};
