@@ -6,18 +6,9 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL!,
   import.meta.env.VITE_SUPABASE_ANON_KEY!
 );
-await supabase.auth.signInWithPassword({
-  email: "your@email.com",
-  password: "yourpassword"
-});
 
-// Fixed “today” for your world-building (you can switch to real today later)
-const TODAY_ISO = "2026-03-04";
 const SUM30_ISO = "2026-07-25";
-
-// Given: today is 4w4d
-const GA_WEEKS = 4;
-const GA_DAYS = 4;
+const LMP_ISO = "2026-02-01";
 
 type LogRow = {
   id: number;
@@ -26,6 +17,14 @@ type LogRow = {
   cravings: string[] | null;
   note: string | null;
 };
+
+function formatDateAU(iso: string) {
+  return new Intl.DateTimeFormat("en-AU", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(iso));
+}
 
 function parseISODateUTC(iso: string) {
   const [y, m, d] = iso.split("-").map(Number);
@@ -59,26 +58,63 @@ function cleanTags(input: string) {
 }
 
 const moodColor = (m: number | null | undefined) => {
-  // simple & readable (no fancy palette wars)
   if (!m) return "#ffffff"; // no log
-  if (m === 1) return "#ff6b6b"; // red
-  if (m === 2) return "#ffa94d"; // orange
-  if (m === 3) return "#ffd43b"; // yellow
-  if (m === 4) return "#69db7c"; // green
-  return "#38d9a9"; // super green for 5
+  if (m === 1) return "#ff6b6b";
+  if (m === 2) return "#ffa94d";
+  if (m === 3) return "#ffd43b";
+  if (m === 4) return "#69db7c";
+  return "#38d9a9";
 };
 
+function moodEmoji(m: number) {
+  const mm = clampMood(m);
+  if (mm === 1) return "😭";
+  if (mm === 2) return "😖";
+  if (mm === 3) return "😐";
+  if (mm === 4) return "🙂";
+  return "😈";
+}
+
+function deriveTitle(note: string | null) {
+  const t = (note ?? "").trim();
+  if (!t) return "Untitled";
+  const firstLine = t.split("\n")[0].trim();
+  return firstLine.length > 60 ? firstLine.slice(0, 57) + "…" : firstLine;
+}
+
 export default function AndrewPage() {
+  // ✅ TODAY that updates daily even if app stays open
+  const [todayISO, setTodayISO] = useState(() => formatISODateUTC(new Date()));
+
+  useEffect(() => {
+    // Schedule a refresh at next local midnight
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(24, 0, 0, 0);
+    const ms = next.getTime() - now.getTime();
+
+    const t = window.setTimeout(() => {
+      setTodayISO(formatISODateUTC(new Date()));
+    }, ms + 1000);
+
+    return () => window.clearTimeout(t);
+  }, [todayISO]); // re-arm each day
+
   const [rows, setRows] = useState<LogRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // editor (for your daily entry)
-  const [logDate, setLogDate] = useState(TODAY_ISO);
+  // editor
+  const [logDate, setLogDate] = useState(todayISO);
   const [mood, setMood] = useState<number>(3);
   const [note, setNote] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
+
+  // timeline UX
+  const PAGE_SIZE = 10;
+  const [page, setPage] = useState(1);
+  const [activeId, setActiveId] = useState<number | null>(null);
 
   async function loadFeed() {
     setLoading(true);
@@ -133,8 +169,6 @@ export default function AndrewPage() {
       note: note,
     };
 
-    // If your table is UNIQUE(log_date) (single-user), this works.
-    // If it’s UNIQUE(user_id, log_date), DB needs auth.uid() to fill user_id.
     const { error } = await supabase.from("preg_log").upsert(payload as any, {
       onConflict: "log_date",
     });
@@ -145,36 +179,47 @@ export default function AndrewPage() {
     await loadFeed();
   }
 
+  // initial load + whenever today changes (midnight), jump editor to today
   useEffect(() => {
     loadFeed();
-  }, []);
+    loadForDate(todayISO);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayISO]);
 
-  // ---- derived: counters
-  const sum30DDay = useMemo(() => daysBetweenISO(TODAY_ISO, SUM30_ISO), []);
-  const dueISO = useMemo(() => {
-    const ga = GA_WEEKS * 7 + GA_DAYS; // 32
-    const remaining = 280 - ga; // 248
-    return addDaysISO(TODAY_ISO, remaining);
-  }, []);
-  const dueDDay = useMemo(() => daysBetweenISO(TODAY_ISO, dueISO), [dueISO]);
+  // ✅ GA derived from LMP + today (auto updates daily)
+  const gaDays = useMemo(
+    () => Math.max(0, daysBetweenISO(LMP_ISO, todayISO)),
+    [todayISO]
+  );
+  const GA_WEEKS = useMemo(() => Math.floor(gaDays / 7), [gaDays]);
+  const GA_DAYS = useMemo(() => gaDays % 7, [gaDays]);
 
-  // ---- streak (Duolingo brain)
+  // counters (auto updates daily)
+  const sum30DDay = useMemo(
+    () => daysBetweenISO(todayISO, SUM30_ISO),
+    [todayISO]
+  );
+  const dueISO = useMemo(() => addDaysISO(LMP_ISO, 280), []);
+  const dueDDay = useMemo(
+    () => daysBetweenISO(todayISO, dueISO),
+    [todayISO, dueISO]
+  );
+
+  // streak (auto updates daily)
   const streak = useMemo(() => {
     const set = new Set(rows.map((r) => r.log_date));
-    let cur = TODAY_ISO;
+    let cur = todayISO;
     let s = 0;
     while (set.has(cur)) {
       s += 1;
       cur = addDaysISO(cur, -1);
     }
     return s;
-  }, [rows]);
+  }, [rows, todayISO]);
 
   const bestStreak = useMemo(() => {
     const set = new Set(rows.map((r) => r.log_date));
     if (set.size === 0) return 0;
-
-    // compute streaks across all logged days
     const dates = Array.from(set).sort(); // ascending
     let best = 1;
     let run = 1;
@@ -188,7 +233,7 @@ export default function AndrewPage() {
     return best;
   }, [rows]);
 
-  // ---- craving cloud
+  // craving cloud
   const cravingCloud = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of rows) {
@@ -201,23 +246,24 @@ export default function AndrewPage() {
     return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).slice(0, 30);
   }, [rows]);
 
-  // ---- heatmap (GitHub-ish): last N weeks ending TODAY
-  const HEATMAP_WEEKS = 16; // adjust: 12, 16, 20...
+  // heatmap: last N weeks ending today (auto updates daily)
+  const HEATMAP_WEEKS = 16;
   const heatmap = useMemo(() => {
-    // map date -> mood
     const byDate = new Map<string, number>();
     rows.forEach((r) => byDate.set(r.log_date, clampMood(Number(r.mood))));
 
-    // Align start to Monday for nicer columns (Mon..Sun rows)
-    // We’ll render rows as Mon..Sun (7 rows), columns = weeks.
-    const end = parseISODateUTC(TODAY_ISO);
-    // find Monday of the week containing end
-    const day = (end.getUTCDay() + 6) % 7; // convert Sun(0) -> 6, Mon(1)->0
+    const end = parseISODateUTC(todayISO);
+    const day = (end.getUTCDay() + 6) % 7; // Sun->6, Mon->0
     const endMonday = new Date(end.getTime() - day * 86400000);
+    const startMonday = new Date(
+      endMonday.getTime() - (HEATMAP_WEEKS - 1) * 7 * 86400000
+    );
 
-    const startMonday = new Date(endMonday.getTime() - (HEATMAP_WEEKS - 1) * 7 * 86400000);
+    const columns: {
+      weekStartISO: string;
+      days: { iso: string; mood?: number }[];
+    }[] = [];
 
-    const columns: { weekStartISO: string; days: { iso: string; mood?: number }[] }[] = [];
     for (let w = 0; w < HEATMAP_WEEKS; w++) {
       const weekStart = new Date(startMonday.getTime() + w * 7 * 86400000);
       const weekStartISO = formatISODateUTC(weekStart);
@@ -225,18 +271,28 @@ export default function AndrewPage() {
       for (let d = 0; d < 7; d++) {
         const dt = new Date(weekStart.getTime() + d * 86400000);
         const iso = formatISODateUTC(dt);
-        // only color up to TODAY (don’t color future)
-        const isFuture = daysBetweenISO(TODAY_ISO, iso) > 0;
-        daysArr.push({
-          iso,
-          mood: isFuture ? undefined : byDate.get(iso),
-        });
+        const isFuture = daysBetweenISO(todayISO, iso) > 0;
+        daysArr.push({ iso, mood: isFuture ? undefined : byDate.get(iso) });
       }
       columns.push({ weekStartISO, days: daysArr });
     }
-
     return columns;
-  }, [rows]);
+  }, [rows, todayISO]);
+
+  // timeline: pagination + active
+  const pageCount = useMemo(
+    () => Math.max(1, Math.ceil(rows.length / PAGE_SIZE)),
+    [rows.length]
+  );
+  const pageItems = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return rows.slice(start, start + PAGE_SIZE);
+  }, [rows, page]);
+
+  const activePost = useMemo(() => {
+    if (activeId == null) return null;
+    return rows.find((r) => r.id === activeId) ?? null;
+  }, [rows, activeId]);
 
   function addTag() {
     const newTags = cleanTags(tagInput);
@@ -244,13 +300,13 @@ export default function AndrewPage() {
     setTags((prev) => Array.from(new Set([...prev, ...newTags])));
     setTagInput("");
   }
-
   function removeTag(t: string) {
     setTags((prev) => prev.filter((x) => x !== t));
   }
 
   return (
     <div style={S.page}>
+      {/* 1) streak / best / sum30 / due date */}
       <header style={S.header}>
         <div>
           <div style={S.title}>Preg Log</div>
@@ -261,39 +317,54 @@ export default function AndrewPage() {
           <Pill>🔥 Streak <b>{streak}</b></Pill>
           <Pill>🏆 Best <b>{bestStreak}</b></Pill>
           <Pill>🏃 SUM 30 D-{Math.max(0, sum30DDay)}</Pill>
-          <Pill>👶 Due D-{Math.max(0, dueDDay)} <span style={{ opacity: 0.7 }}>({dueISO})</span></Pill>
+          <Pill>
+            👶 Due D-{Math.max(0, dueDDay)}{" "}
+            <span style={{ opacity: 0.7 }}>({dueISO})</span>
+          </Pill>
         </div>
       </header>
 
       {msg && <div style={S.msg}>{msg}</div>}
 
-      {/* Pregnancy progress */}
+      {/* 2) pregnancy progress bar */}
       <section style={S.card}>
         <div style={S.cardTitle}>Pregnancy</div>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 800 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ fontWeight: 950 }}>
             Week {GA_WEEKS} Day {GA_DAYS}
           </div>
-          <div style={{ opacity: 0.75 }}>
-            {GA_WEEKS * 7 + GA_DAYS} / 280 days
-          </div>
+          <div style={{ opacity: 0.75 }}>{gaDays} / 280 days</div>
         </div>
 
         <div style={S.progressOuter}>
-          <div
-            style={{
-              ...S.progressInner,
-              width: `${((GA_WEEKS * 7 + GA_DAYS) / 280) * 100}%`,
-            }}
-          />
+          <div style={{ ...S.progressInner, width: `${(gaDays / 280) * 100}%` }} />
+        </div>
+
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+          LMP: {LMP_ISO} • Today: {todayISO} ({formatDateAU(todayISO)})
         </div>
       </section>
 
-      {/* Heatmap */}
+      {/* 3) mood heatmap */}
       <section style={S.card}>
         <div style={S.rowBetween}>
           <div style={S.cardTitle}>Mood heatmap</div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, opacity: 0.75 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              fontSize: 12,
+              opacity: 0.75,
+            }}
+          >
             <LegendDot color="#ffffff" label="no log" />
             <LegendDot color={moodColor(1)} label="1" />
             <LegendDot color={moodColor(2)} label="2" />
@@ -313,7 +384,7 @@ export default function AndrewPage() {
                   return (
                     <div
                       key={d.iso}
-                      title={`${d.iso}${d.mood ? ` mood ${d.mood}` : ""}`}
+                      title={`${formatDateAU(d.iso)}${d.mood ? ` mood ${d.mood}` : ""}`}
                       style={{
                         width: 14,
                         height: 14,
@@ -330,7 +401,7 @@ export default function AndrewPage() {
         </div>
       </section>
 
-      {/* Craving cloud */}
+      {/* 4) craving cloud */}
       <section style={S.card}>
         <div style={S.cardTitle}>Craving cloud</div>
         {cravingCloud.length === 0 ? (
@@ -346,10 +417,104 @@ export default function AndrewPage() {
         )}
       </section>
 
-      {/* Today editor */}
+      {/* 5) timeline list: date - title - mood, 10 per page + pagination */}
       <section style={S.card}>
         <div style={S.rowBetween}>
-          <div style={S.cardTitle}>Today log</div>
+          <div style={S.cardTitle}>Timeline</div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              style={S.btn}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              title="Prev page"
+            >
+              Prev
+            </button>
+            <div style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap" }}>
+              Page {page} / {pageCount}
+            </div>
+            <button
+              style={S.btn}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={page >= pageCount}
+              title="Next page"
+            >
+              Next
+            </button>
+
+            <button style={S.btn} onClick={loadFeed} disabled={loading} title="Refresh">
+              {loading ? "Loading..." : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ opacity: 0.7, marginTop: 10 }}>Loading…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ opacity: 0.7, marginTop: 10 }}>No entries yet.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+            {pageItems.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => setActiveId(r.id)}
+                style={{
+                  ...S.timelineRow,
+                  background: activeId === r.id ? "#f8f9fa" : "white",
+                }}
+                title="Open (writing is down below)"
+              >
+                <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
+                  <div style={{ fontWeight: 950, width: 130, textAlign: "left" }}>
+                    {formatDateAU(r.log_date)}
+                  </div>
+                  <div style={{ fontWeight: 700, textAlign: "left" }}>
+                    {deriveTitle(r.note)}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 18 }}>{moodEmoji(r.mood)}</span>
+                  <span style={{ ...S.badge, opacity: 0.9 }}>mood {r.mood}/5</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* 6) actual writing part goes way down */}
+      <section style={{ ...S.card, opacity: 0.95 }}>
+        <div style={S.rowBetween}>
+          <div style={S.cardTitle}>Writing (downest)</div>
+          {activePost ? (
+            <span style={{ ...S.badge, opacity: 0.85 }}>
+              {formatDateAU(activePost.log_date)} • {moodEmoji(activePost.mood)}
+            </span>
+          ) : (
+            <span style={{ fontSize: 12, opacity: 0.7 }}>Pick a post above.</span>
+          )}
+        </div>
+
+        {activePost?.cravings && activePost.cravings.length > 0 && (
+          <div style={{ ...S.wrap, marginTop: 10 }}>
+            {activePost.cravings.map((t) => (
+              <span key={t} style={S.pill}>
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div style={{ marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+          {activePost?.note ? activePost.note : <span style={{ opacity: 0.7 }}>No note.</span>}
+        </div>
+      </section>
+
+      {/* editor goes LAST (public doesn't need to see it) */}
+      <section style={S.card}>
+        <div style={S.rowBetween}>
+          <div style={S.cardTitle}>Today log (editor)</div>
 
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
@@ -375,7 +540,9 @@ export default function AndrewPage() {
               onChange={(e) => setMood(clampMood(Number(e.target.value)))}
               style={{ width: 240 }}
             />
-            <div style={{ fontWeight: 900, width: 16 }}>{mood}</div>
+            <div style={{ fontWeight: 950, width: 32 }}>
+              {mood} {moodEmoji(mood)}
+            </div>
           </div>
 
           <div style={S.label}>Cravings</div>
@@ -420,51 +587,10 @@ export default function AndrewPage() {
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="blog note..."
-            style={{ ...S.input, minHeight: 140, resize: "vertical" }}
+            placeholder="write… (this will show in Writing section when selected)"
+            style={{ ...S.input, minHeight: 160, resize: "vertical" }}
           />
         </div>
-      </section>
-
-      {/* Timeline */}
-      <section style={S.card}>
-        <div style={S.rowBetween}>
-          <div style={S.cardTitle}>Timeline</div>
-          <button style={S.btn} onClick={loadFeed} disabled={loading}>
-            {loading ? "Loading..." : "Refresh"}
-          </button>
-        </div>
-
-        {loading ? (
-          <div style={{ opacity: 0.7, marginTop: 10 }}>Loading…</div>
-        ) : rows.length === 0 ? (
-          <div style={{ opacity: 0.7, marginTop: 10 }}>No entries yet.</div>
-        ) : (
-          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-            {rows.map((r) => (
-              <article key={r.id} style={S.post}>
-                <div style={S.rowBetween}>
-                  <div style={{ fontWeight: 900 }}>{r.log_date}</div>
-                  <span style={S.badge}>mood {r.mood}/5</span>
-                </div>
-
-                {r.cravings && r.cravings.length > 0 && (
-                  <div style={{ ...S.wrap, marginTop: 8 }}>
-                    {r.cravings.map((t) => (
-                      <span key={t} style={S.pill}>{t}</span>
-                    ))}
-                  </div>
-                )}
-
-                {r.note && (
-                  <div style={{ marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-                    {r.note}
-                  </div>
-                )}
-              </article>
-            ))}
-          </div>
-        )}
       </section>
     </div>
   );
@@ -493,24 +619,174 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 }
 
 const S: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 920, margin: "0 auto", padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" },
-  headerRight: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },
-  title: { fontSize: 22, fontWeight: 950 },
-  sub: { fontSize: 12, opacity: 0.7, marginTop: 2 },
-  card: { marginTop: 14, padding: 14, border: "1px solid #eee", borderRadius: 16, background: "white" },
-  cardTitle: { fontWeight: 900 },
-  rowBetween: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
-  msg: { marginTop: 12, padding: 10, borderRadius: 12, background: "#fff3cd", border: "1px solid #ffe69c" },
-  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 800 },
-  input: { width: "100%", padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", background: "white", boxSizing: "border-box" },
-  badge: { padding: "6px 10px", borderRadius: 999, border: "1px solid #eee", background: "#fafafa", fontSize: 12, whiteSpace: "nowrap" },
-  pill: { padding: "6px 10px", borderRadius: 999, border: "1px solid #eee", background: "#fafafa", fontSize: 13 },
-  pillBtn: { padding: "6px 10px", borderRadius: 999, border: "1px solid #eee", background: "#fafafa", fontSize: 13, cursor: "pointer" },
-  wrap: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 },
-  grid: { display: "grid", gridTemplateColumns: "120px 1fr", gap: 12, alignItems: "center", marginTop: 12 },
-  label: { opacity: 0.75, fontWeight: 800 },
-  post: { padding: 12, border: "1px solid #eee", borderRadius: 14 },
-  progressOuter: { marginTop: 10, background: "#f1f3f5", height: 10, borderRadius: 999, overflow: "hidden" },
-  progressInner: { height: "100%", background: "#69db7c", borderRadius: 999 },
+  page: {
+    maxWidth: 920,
+    margin: "0 auto",
+    padding: 18,
+    fontFamily:
+      "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    background: "#f6f7f8", // clinic paper
+    color: "#121417",
+    minHeight: "100vh",
+  },
+
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    gap: 12,
+    flexWrap: "wrap",
+    padding: "10px 12px",
+    borderRadius: 18,
+    background: "rgba(255,255,255,0.75)",
+    border: "1px solid rgba(18,20,23,0.08)",
+    boxShadow: "0 10px 30px rgba(18,20,23,0.06)",
+    backdropFilter: "blur(8px)",
+  },
+
+  headerRight: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+
+  title: {
+    fontSize: 20,
+    fontWeight: 900,
+    letterSpacing: 0.2,
+  },
+
+  sub: {
+    fontSize: 12,
+    opacity: 0.7,
+    marginTop: 4,
+  },
+
+  card: {
+    marginTop: 12,
+    padding: 14,
+    borderRadius: 18,
+    background: "rgba(255,255,255,0.78)",
+    border: "1px solid rgba(18,20,23,0.08)",
+    boxShadow: "0 12px 28px rgba(18,20,23,0.05)",
+    backdropFilter: "blur(8px)",
+  },
+
+  cardTitle: {
+    fontWeight: 900,
+    letterSpacing: 0.2,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  rowBetween: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  },
+
+  msg: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 14,
+    background: "rgba(255, 248, 224, 0.9)", // gentle yellow
+    border: "1px solid rgba(146, 120, 32, 0.22)",
+    color: "#2a2314",
+  },
+
+  btn: {
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(18,20,23,0.14)",
+    background: "rgba(255,255,255,0.9)",
+    cursor: "pointer",
+    fontWeight: 850,
+    boxShadow: "0 6px 14px rgba(18,20,23,0.05)",
+  },
+
+  input: {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(18,20,23,0.14)",
+    background: "rgba(255,255,255,0.92)",
+    boxSizing: "border-box",
+    outline: "none",
+  },
+
+  badge: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(18,20,23,0.12)",
+    background: "rgba(246,247,248,0.9)", // paper chip
+    fontSize: 12,
+    whiteSpace: "nowrap",
+  },
+
+  pill: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(18,20,23,0.12)",
+    background: "rgba(246,247,248,0.9)",
+    fontSize: 13,
+  },
+
+  pillBtn: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(18,20,23,0.12)",
+    background: "rgba(246,247,248,0.9)",
+    fontSize: 13,
+    cursor: "pointer",
+  },
+
+  wrap: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "120px 1fr",
+    gap: 12,
+    alignItems: "center",
+    marginTop: 12,
+  },
+
+  label: {
+    opacity: 0.75,
+    fontWeight: 850,
+  },
+
+  progressOuter: {
+    marginTop: 10,
+    background: "rgba(18,20,23,0.06)",
+    height: 10,
+    borderRadius: 999,
+    overflow: "hidden",
+  },
+
+  progressInner: {
+    height: "100%",
+    background: "#2f6f62", // deep clinic green
+    borderRadius: 999,
+  },
+
+  timelineRow: {
+    width: "100%",
+    border: "1px solid rgba(18,20,23,0.10)",
+    borderRadius: 16,
+    padding: "10px 12px",
+    cursor: "pointer",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    background: "rgba(255,255,255,0.88)",
+  },
 };
