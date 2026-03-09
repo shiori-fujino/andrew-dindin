@@ -13,10 +13,18 @@ const LMP_ISO = "2026-02-01";
 type LogRow = {
   id: number;
   log_date: string; // YYYY-MM-DD
+  title: string | null;
   mood: number; // 1..5
   cravings: string[] | null;
   note: string | null;
 };
+
+function formatISODateLocal(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function formatDateAU(iso: string) {
   return new Intl.DateTimeFormat("en-AU", {
@@ -30,24 +38,29 @@ function parseISODateUTC(iso: string) {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d));
 }
+
 function formatISODateUTC(d: Date) {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+
 function addDaysISO(iso: string, days: number) {
   const t = parseISODateUTC(iso).getTime() + days * 86400000;
   return formatISODateUTC(new Date(t));
 }
+
 function daysBetweenISO(a: string, b: string) {
   return Math.round(
     (parseISODateUTC(b).getTime() - parseISODateUTC(a).getTime()) / 86400000
   );
 }
+
 function clampMood(n: number) {
   return Math.max(1, Math.min(5, n));
 }
+
 function cleanTags(input: string) {
   const parts = input
     .split(",")
@@ -57,8 +70,22 @@ function cleanTags(input: string) {
   return Array.from(new Set(parts));
 }
 
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth <= breakpoint : false
+  );
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= breakpoint);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpoint]);
+
+  return isMobile;
+}
+
 const moodColor = (m: number | null | undefined) => {
-  if (!m) return "#ffffff"; // no log
+  if (!m) return "#ffffff";
   if (m === 1) return "#ff6b6b";
   if (m === 2) return "#ffa94d";
   if (m === 3) return "#ffd43b";
@@ -75,46 +102,82 @@ function moodEmoji(m: number) {
   return "😈";
 }
 
-function deriveTitle(note: string | null) {
+function deriveTitle(title: string | null, note: string | null) {
+  const tt = (title ?? "").trim();
+  if (tt) return tt.length > 60 ? tt.slice(0, 57) + "…" : tt;
+
   const t = (note ?? "").trim();
   if (!t) return "Untitled";
   const firstLine = t.split("\n")[0].trim();
   return firstLine.length > 60 ? firstLine.slice(0, 57) + "…" : firstLine;
 }
 
+function MobileField({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div style={S.mobileField}>
+      <div style={S.mobileFieldLabel}>{label}</div>
+      <div style={S.mobileFieldValue}>{value}</div>
+    </div>
+  );
+}
+
 export default function AndrewPage() {
-  // ✅ TODAY that updates daily even if app stays open
-  const [todayISO, setTodayISO] = useState(() => formatISODateUTC(new Date()));
+  const isMobile = useIsMobile();
+
+  const [todayISO, setTodayISO] = useState(() => formatISODateLocal(new Date()));
 
   useEffect(() => {
-    // Schedule a refresh at next local midnight
     const now = new Date();
     const next = new Date(now);
     next.setHours(24, 0, 0, 0);
     const ms = next.getTime() - now.getTime();
 
     const t = window.setTimeout(() => {
-      setTodayISO(formatISODateUTC(new Date()));
+      setTodayISO(formatISODateLocal(new Date()));
     }, ms + 1000);
 
     return () => window.clearTimeout(t);
-  }, [todayISO]); // re-arm each day
+  }, [todayISO]);
 
   const [rows, setRows] = useState<LogRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // editor
   const [logDate, setLogDate] = useState(todayISO);
+  const [title, setTitle] = useState("");
   const [mood, setMood] = useState<number>(3);
   const [note, setNote] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
 
-  // timeline UX
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+
   const PAGE_SIZE = 10;
   const [page, setPage] = useState(1);
   const [activeId, setActiveId] = useState<number | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSessionEmail(data.session?.user?.email ?? null);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSessionEmail(session?.user?.email ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   async function loadFeed() {
     setLoading(true);
@@ -122,7 +185,7 @@ export default function AndrewPage() {
 
     const { data, error } = await supabase
       .from("preg_log")
-      .select("id,log_date,mood,cravings,note")
+      .select("id,log_date,title,mood,cravings,note")
       .order("log_date", { ascending: false })
       .limit(400);
 
@@ -141,7 +204,7 @@ export default function AndrewPage() {
 
     const { data, error } = await supabase
       .from("preg_log")
-      .select("id,log_date,mood,cravings,note")
+      .select("id,log_date,title,mood,cravings,note")
       .eq("log_date", dateISO)
       .maybeSingle();
 
@@ -151,10 +214,12 @@ export default function AndrewPage() {
       const r = data as LogRow;
       setMood(clampMood(Number(r.mood)));
       setTags((r.cravings ?? []).map(String));
+      setTitle(r.title ?? "");
       setNote(r.note ?? "");
     } else {
       setMood(3);
       setTags([]);
+      setTitle("");
       setNote("");
     }
   }
@@ -164,6 +229,7 @@ export default function AndrewPage() {
 
     const payload = {
       log_date: logDate,
+      title: title.trim() || null,
       mood: clampMood(mood),
       cravings: tags,
       note: note,
@@ -179,14 +245,69 @@ export default function AndrewPage() {
     await loadFeed();
   }
 
-  // initial load + whenever today changes (midnight), jump editor to today
+  async function handleLogin() {
+    setMsg(null);
+
+    const email = authEmail.trim();
+    const password = authPassword;
+
+    if (!email || !password) {
+      setMsg("Enter email and password.");
+      return;
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
+
+    setAuthPassword("");
+    setMsg("Logged in.");
+  }
+
+  async function handleLogout() {
+    setMsg(null);
+
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
+
+    setMsg("Logged out.");
+  }
+async function handleSetPassword() {
+  setMsg(null);
+
+  if (!newPassword.trim()) {
+    setMsg("Enter a password.");
+    return;
+  }
+
+  const { error } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+
+  if (error) {
+    setMsg(error.message);
+    return;
+  }
+
+  setNewPassword("");
+  setMsg("Password set.");
+}
   useEffect(() => {
     loadFeed();
     loadForDate(todayISO);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [todayISO]);
 
-  // ✅ GA derived from LMP + today (auto updates daily)
   const gaDays = useMemo(
     () => Math.max(0, daysBetweenISO(LMP_ISO, todayISO)),
     [todayISO]
@@ -194,7 +315,6 @@ export default function AndrewPage() {
   const GA_WEEKS = useMemo(() => Math.floor(gaDays / 7), [gaDays]);
   const GA_DAYS = useMemo(() => gaDays % 7, [gaDays]);
 
-  // counters (auto updates daily)
   const sum30DDay = useMemo(
     () => daysBetweenISO(todayISO, SUM30_ISO),
     [todayISO]
@@ -205,7 +325,6 @@ export default function AndrewPage() {
     [todayISO, dueISO]
   );
 
-  // streak (auto updates daily)
   const streak = useMemo(() => {
     const set = new Set(rows.map((r) => r.log_date));
     let cur = todayISO;
@@ -220,7 +339,7 @@ export default function AndrewPage() {
   const bestStreak = useMemo(() => {
     const set = new Set(rows.map((r) => r.log_date));
     if (set.size === 0) return 0;
-    const dates = Array.from(set).sort(); // ascending
+    const dates = Array.from(set).sort();
     let best = 1;
     let run = 1;
     for (let i = 1; i < dates.length; i++) {
@@ -233,7 +352,6 @@ export default function AndrewPage() {
     return best;
   }, [rows]);
 
-  // craving cloud
   const cravingCloud = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of rows) {
@@ -243,17 +361,18 @@ export default function AndrewPage() {
         m.set(k, (m.get(k) ?? 0) + 1);
       }
     }
-    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).slice(0, 30);
+    return Array.from(m.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 30);
   }, [rows]);
 
-  // heatmap: last N weeks ending today (auto updates daily)
   const HEATMAP_WEEKS = 16;
   const heatmap = useMemo(() => {
     const byDate = new Map<string, number>();
     rows.forEach((r) => byDate.set(r.log_date, clampMood(Number(r.mood))));
 
     const end = parseISODateUTC(todayISO);
-    const day = (end.getUTCDay() + 6) % 7; // Sun->6, Mon->0
+    const day = (end.getUTCDay() + 6) % 7;
     const endMonday = new Date(end.getTime() - day * 86400000);
     const startMonday = new Date(
       endMonday.getTime() - (HEATMAP_WEEKS - 1) * 7 * 86400000
@@ -268,22 +387,25 @@ export default function AndrewPage() {
       const weekStart = new Date(startMonday.getTime() + w * 7 * 86400000);
       const weekStartISO = formatISODateUTC(weekStart);
       const daysArr: { iso: string; mood?: number }[] = [];
+
       for (let d = 0; d < 7; d++) {
         const dt = new Date(weekStart.getTime() + d * 86400000);
         const iso = formatISODateUTC(dt);
         const isFuture = daysBetweenISO(todayISO, iso) > 0;
         daysArr.push({ iso, mood: isFuture ? undefined : byDate.get(iso) });
       }
+
       columns.push({ weekStartISO, days: daysArr });
     }
+
     return columns;
   }, [rows, todayISO]);
 
-  // timeline: pagination + active
   const pageCount = useMemo(
     () => Math.max(1, Math.ceil(rows.length / PAGE_SIZE)),
     [rows.length]
   );
+
   const pageItems = useMemo(() => {
     const start = (page - 1) * PAGE_SIZE;
     return rows.slice(start, start + PAGE_SIZE);
@@ -300,254 +422,526 @@ export default function AndrewPage() {
     setTags((prev) => Array.from(new Set([...prev, ...newTags])));
     setTagInput("");
   }
+
   function removeTag(t: string) {
     setTags((prev) => prev.filter((x) => x !== t));
   }
 
   return (
-    <div style={S.page}>
-      {/* 1) streak / best / sum30 / due date */}
+    <div style={{ ...S.page, padding: isMobile ? 12 : 20 }}>
       <header style={S.header}>
-        <div>
-          <div style={S.title}>Preg Log</div>
-          <div style={S.sub}>Data + diary. Public read. One log per day.</div>
+        <div style={S.headerTitleRow}>
+          <div>
+            <div style={S.title}>Pregnancy Log</div>
+            <div style={S.sub}>Data + diary. Public read. One log per day.</div>
+          </div>
         </div>
 
-        <div style={S.headerRight}>
-          <Pill>🔥 Streak <b>{streak}</b></Pill>
-          <Pill>🏆 Best <b>{bestStreak}</b></Pill>
-          <Pill>🏃 SUM 30 D-{Math.max(0, sum30DDay)}</Pill>
-          <Pill>
-            👶 Due D-{Math.max(0, dueDDay)}{" "}
-            <span style={{ opacity: 0.7 }}>({dueISO})</span>
-          </Pill>
-        </div>
+        {isMobile ? (
+          <div style={S.mobileStatsGrid}>
+            <MobileField label="Current Streak" value={streak} />
+            <MobileField label="Best Streak" value={bestStreak} />
+            <MobileField label="SUM 30" value={`D-${Math.max(0, sum30DDay)}`} />
+            <MobileField
+              label="Due"
+              value={`D-${Math.max(0, dueDDay)} (${formatDateAU(dueISO)})`}
+            />
+            <MobileField
+              label="GA"
+              value={`Week ${GA_WEEKS} Day ${GA_DAYS}`}
+            />
+            <MobileField
+              label="Today"
+              value={`${todayISO} (${formatDateAU(todayISO)})`}
+            />
+          </div>
+        ) : (
+          <table style={S.statsTable}>
+            <thead>
+              <tr>
+                <th style={S.statsTh}>Current Streak</th>
+                <th style={S.statsTh}>Best Streak</th>
+                <th style={S.statsTh}>SUM 30</th>
+                <th style={S.statsTh}>Due</th>
+                <th style={S.statsTh}>GA</th>
+                <th style={S.statsTh}>Today</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={S.statsTd}>{streak}</td>
+                <td style={S.statsTd}>{bestStreak}</td>
+                <td style={S.statsTd}>D-{Math.max(0, sum30DDay)}</td>
+                <td style={S.statsTd}>
+                  D-{Math.max(0, dueDDay)} ({formatDateAU(dueISO)})
+                </td>
+                <td style={S.statsTd}>
+                  Week {GA_WEEKS} Day {GA_DAYS}
+                </td>
+                <td style={S.statsTd}>
+                  {todayISO} ({formatDateAU(todayISO)})
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        )}
       </header>
 
       {msg && <div style={S.msg}>{msg}</div>}
 
-      {/* 2) pregnancy progress bar */}
-      <section style={S.card}>
-        <div style={S.cardTitle}>Pregnancy</div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ fontWeight: 950 }}>
-            Week {GA_WEEKS} Day {GA_DAYS}
+      <section style={S.section}>
+        <div style={S.sectionTitle}>Pregnancy Progress</div>
+        <div style={S.sectionBody}>
+          {isMobile ? (
+            <div style={S.mobileStatsGrid}>
+              <MobileField label="LMP" value={LMP_ISO} />
+              <MobileField label="Today" value={todayISO} />
+              <MobileField
+                label="Gestational Age"
+                value={`Week ${GA_WEEKS} Day ${GA_DAYS}`}
+              />
+              <MobileField label="Due Date" value={dueISO} />
+              <MobileField label="Elapsed" value={`${gaDays} / 280 days`} />
+              <MobileField label="Display" value={formatDateAU(dueISO)} />
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={S.table}>
+                <tbody>
+                  <tr>
+                    <th style={S.th}>LMP</th>
+                    <td style={S.tdMono}>{LMP_ISO}</td>
+                    <th style={S.th}>Today</th>
+                    <td style={S.tdMono}>{todayISO}</td>
+                    <th style={S.th}>Gestational Age</th>
+                    <td style={S.td}>Week {GA_WEEKS} Day {GA_DAYS}</td>
+                  </tr>
+                  <tr>
+                    <th style={S.th}>Due Date</th>
+                    <td style={S.tdMono}>{dueISO}</td>
+                    <th style={S.th}>Elapsed</th>
+                    <td style={S.td}>{gaDays} / 280 days</td>
+                    <th style={S.th}>Display</th>
+                    <td style={S.td}>{formatDateAU(dueISO)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div style={S.progressWrap}>
+            <div
+              style={{
+                ...S.progressBar,
+                width: `${Math.min(100, (gaDays / 280) * 100)}%`,
+              }}
+            />
+            <div style={S.progressLabel}>
+              {gaDays} / 280 days ({Math.round((gaDays / 280) * 100)}%)
+            </div>
           </div>
-          <div style={{ opacity: 0.75 }}>{gaDays} / 280 days</div>
-        </div>
-
-        <div style={S.progressOuter}>
-          <div style={{ ...S.progressInner, width: `${(gaDays / 280) * 100}%` }} />
-        </div>
-
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-          LMP: {LMP_ISO} • Today: {todayISO} ({formatDateAU(todayISO)})
         </div>
       </section>
 
-      {/* 3) mood heatmap */}
-      <section style={S.card}>
-        <div style={S.rowBetween}>
-          <div style={S.cardTitle}>Mood heatmap</div>
+      <section style={S.section}>
+        <div style={S.sectionTitle}>Mood Heatmap</div>
+        <div style={S.sectionBody}>
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#6b7280" }}>
+            1 = worst • 5 = best • blank = no log
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            <div style={{ display: "grid", gridAutoFlow: "column", gap: 2 }}>
+              {heatmap.map((col) => (
+                <div key={col.weekStartISO} style={{ display: "grid", gap: 2 }}>
+                  {col.days.map((d) => {
+                    const c = d.mood ? moodColor(d.mood) : "#ffffff";
+                    return (
+                      <div
+                        key={d.iso}
+                        title={`${formatDateAU(d.iso)}${
+                          d.mood ? ` mood ${d.mood}` : ""
+                        }`}
+                        style={{
+                          width: isMobile ? 12 : 16,
+                          height: isMobile ? 12 : 16,
+                          background: c,
+                          border: "1px solid #d1d5db",
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section style={S.section}>
+        <div style={S.sectionTitle}>Top Cravings</div>
+        <div style={S.sectionBody}>
+          {cravingCloud.length === 0 ? (
+            <div style={{ fontSize: 13, color: "#6b7280" }}>No cravings yet.</div>
+          ) : isMobile ? (
+            <div style={S.mobileList}>
+              {cravingCloud.map(([tag, count]) => (
+                <div key={tag} style={S.mobileListRow}>
+                  <div style={S.mobileListPrimary}>{tag}</div>
+                  <div style={S.mobileListSecondary}>{count}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Craving</th>
+                    <th style={S.th}>Count</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cravingCloud.map(([tag, count]) => (
+                    <tr key={tag}>
+                      <td style={S.td}>{tag}</td>
+                      <td style={S.tdMono}>{count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section style={S.section}>
+        <div
+          style={{
+            ...S.sectionTitle,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: isMobile ? "stretch" : "center",
+            flexDirection: isMobile ? "column" : "row",
+            gap: 8,
+          }}
+        >
+          <span>Timeline</span>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: isMobile ? "1fr 1fr" : "auto auto auto auto",
+              gap: 6,
+              alignItems: "center",
+              width: isMobile ? "100%" : undefined,
+            }}
+          >
+            <button
+              style={{ ...S.btnSm, width: isMobile ? "100%" : undefined }}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+            >
+              Prev
+            </button>
+
+            <button
+              style={{ ...S.btnSm, width: isMobile ? "100%" : undefined }}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={page >= pageCount}
+            >
+              Next
+            </button>
+
+            <button
+              style={{
+                ...S.btnSm,
+                width: isMobile ? "100%" : undefined,
+                gridColumn: isMobile ? "1 / -1" : undefined,
+              }}
+              onClick={loadFeed}
+              disabled={loading}
+            >
+              {loading ? "Loading..." : "Refresh"}
+            </button>
+
+            <span
+              style={{
+                fontSize: 11,
+                color: "#6b7280",
+                whiteSpace: "nowrap",
+                textAlign: isMobile ? "center" : "left",
+                gridColumn: isMobile ? "1 / -1" : undefined,
+              }}
+            >
+              Page {page} / {pageCount}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          {loading ? (
+            <div style={{ padding: 12, color: "#6b7280" }}>Loading…</div>
+          ) : rows.length === 0 ? (
+            <div style={{ padding: 12, color: "#6b7280" }}>No entries yet.</div>
+          ) : (
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Date</th>
+                  <th style={S.th}>Mood</th>
+                  <th style={S.th}>Title</th>
+                  <th style={S.th}>Cravings</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageItems.map((r) => {
+                  const selected = activeId === r.id;
+                  return (
+                    <tr
+                      key={r.id}
+                      onClick={() => setActiveId(r.id)}
+                      style={{
+                        ...(selected ? S.selectedRow : {}),
+                        cursor: "pointer",
+                      }}
+                    >
+                      <td style={S.tdMono}>{formatDateAU(r.log_date)}</td>
+                      <td style={S.td}>
+                        {moodEmoji(r.mood)} {r.mood}/5
+                      </td>
+                      <td style={S.td}>{deriveTitle(r.title, r.note)}</td>
+                      <td style={S.td}>
+                        <div style={S.tagsInline}>
+                          {(r.cravings ?? []).length === 0 ? (
+                            <span style={{ color: "#9ca3af" }}>-</span>
+                          ) : (
+                            (r.cravings ?? []).map((t) => (
+                              <span key={t} style={S.tagCell}>
+                                {t}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+
+      <section style={S.section}>
+        <div style={S.sectionTitle}>Entry Detail</div>
+        <div style={S.sectionBody}>
+          {!activePost ? (
+            <div style={{ color: "#6b7280", fontSize: 13 }}>
+              Select a row from Timeline.
+            </div>
+          ) : isMobile ? (
+            <div style={S.mobileDetailWrap}>
+              <MobileField
+                label="Date"
+                value={formatDateAU(activePost.log_date)}
+              />
+              <MobileField
+                label="Title"
+                value={
+                  activePost.title || (
+                    <span style={{ color: "#6b7280" }}>Untitled</span>
+                  )
+                }
+              />
+              <MobileField
+                label="Mood"
+                value={`${moodEmoji(activePost.mood)} ${activePost.mood}/5`}
+              />
+              <MobileField
+                label="Cravings"
+                value={
+                  (activePost.cravings ?? []).length ? (
+                    <div style={S.tagsInline}>
+                      {activePost.cravings!.map((t) => (
+                        <span key={t} style={S.tagCell}>
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{ color: "#6b7280" }}>None</span>
+                  )
+                }
+              />
+              <MobileField
+                label="Note"
+                value={
+                  <div style={S.noteBox}>
+                    {activePost.note || (
+                      <span style={{ color: "#6b7280" }}>No note.</span>
+                    )}
+                  </div>
+                }
+              />
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={S.table}>
+                <tbody>
+                  <tr>
+                    <th style={S.th}>Date</th>
+                    <td style={S.tdMono}>{formatDateAU(activePost.log_date)}</td>
+                    <th style={S.th}>Mood</th>
+                    <td style={S.td}>
+                      {moodEmoji(activePost.mood)} {activePost.mood}/5
+                    </td>
+                  </tr>
+                  <tr>
+                    <th style={S.th}>Title</th>
+                    <td style={S.td} colSpan={3}>
+                      {activePost.title || (
+                        <span style={{ color: "#6b7280" }}>Untitled</span>
+                      )}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th style={S.th}>Cravings</th>
+                    <td style={S.td} colSpan={3}>
+                      {(activePost.cravings ?? []).length ? (
+                        <div style={S.tagsInline}>
+                          {activePost.cravings!.map((t) => (
+                            <span key={t} style={S.tagCell}>
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span style={{ color: "#6b7280" }}>None</span>
+                      )}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th style={S.th}>Note</th>
+                    <td style={S.td} colSpan={3}>
+                      <div style={S.noteBox}>
+                        {activePost.note || (
+                          <span style={{ color: "#6b7280" }}>No note.</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section style={S.section}>
+        <div
+          style={{
+            ...S.sectionTitle,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: isMobile ? "stretch" : "center",
+            flexDirection: isMobile ? "column" : "row",
+            gap: 8,
+          }}
+        >
+          <span>Data Entry</span>
+
           <div
             style={{
               display: "flex",
               gap: 8,
               alignItems: "center",
-              fontSize: 12,
-              opacity: 0.75,
+              flexDirection: isMobile ? "column" : "row",
+              width: isMobile ? "100%" : undefined,
             }}
           >
-            <LegendDot color="#ffffff" label="no log" />
-            <LegendDot color={moodColor(1)} label="1" />
-            <LegendDot color={moodColor(2)} label="2" />
-            <LegendDot color={moodColor(3)} label="3" />
-            <LegendDot color={moodColor(4)} label="4" />
-            <LegendDot color={moodColor(5)} label="5" />
-          </div>
-        </div>
-
-        <div style={{ overflowX: "auto" }}>
-          <div style={{ display: "grid", gridAutoFlow: "column", gap: 6 }}>
-            {heatmap.map((col) => (
-              <div key={col.weekStartISO} style={{ display: "grid", gap: 6 }}>
-                {col.days.map((d) => {
-                  const c = d.mood ? moodColor(d.mood) : "#ffffff";
-                  const border = d.mood ? "#e9ecef" : "#f1f3f5";
-                  return (
-                    <div
-                      key={d.iso}
-                      title={`${formatDateAU(d.iso)}${d.mood ? ` mood ${d.mood}` : ""}`}
-                      style={{
-                        width: 14,
-                        height: 14,
-                        borderRadius: 4,
-                        background: c,
-                        border: `1px solid ${border}`,
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* 4) craving cloud */}
-      <section style={S.card}>
-        <div style={S.cardTitle}>Craving cloud</div>
-        {cravingCloud.length === 0 ? (
-          <div style={{ opacity: 0.7 }}>No cravings yet.</div>
-        ) : (
-          <div style={S.wrap}>
-            {cravingCloud.map(([tag, count]) => (
-              <span key={tag} style={S.pill}>
-                {tag} <span style={{ opacity: 0.65 }}>({count})</span>
-              </span>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 5) timeline list: date - title - mood, 10 per page + pagination */}
-      <section style={S.card}>
-        <div style={S.rowBetween}>
-          <div style={S.cardTitle}>Timeline</div>
-
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              style={S.btn}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              title="Prev page"
-            >
-              Prev
-            </button>
-            <div style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap" }}>
-              Page {page} / {pageCount}
-            </div>
-            <button
-              style={S.btn}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              disabled={page >= pageCount}
-              title="Next page"
-            >
-              Next
-            </button>
-
-            <button style={S.btn} onClick={loadFeed} disabled={loading} title="Refresh">
-              {loading ? "Loading..." : "Refresh"}
-            </button>
-          </div>
-        </div>
-
-        {loading ? (
-          <div style={{ opacity: 0.7, marginTop: 10 }}>Loading…</div>
-        ) : rows.length === 0 ? (
-          <div style={{ opacity: 0.7, marginTop: 10 }}>No entries yet.</div>
-        ) : (
-          <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-            {pageItems.map((r) => (
-              <button
-                key={r.id}
-                onClick={() => setActiveId(r.id)}
-                style={{
-                  ...S.timelineRow,
-                  background: activeId === r.id ? "#f8f9fa" : "white",
-                }}
-                title="Open (writing is down below)"
-              >
-                <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
-                  <div style={{ fontWeight: 950, width: 130, textAlign: "left" }}>
-                    {formatDateAU(r.log_date)}
-                  </div>
-                  <div style={{ fontWeight: 700, textAlign: "left" }}>
-                    {deriveTitle(r.note)}
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: 18 }}>{moodEmoji(r.mood)}</span>
-                  <span style={{ ...S.badge, opacity: 0.9 }}>mood {r.mood}/5</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 6) actual writing part goes way down */}
-      <section style={{ ...S.card, opacity: 0.95 }}>
-        <div style={S.rowBetween}>
-          <div style={S.cardTitle}>Writing (downest)</div>
-          {activePost ? (
-            <span style={{ ...S.badge, opacity: 0.85 }}>
-              {formatDateAU(activePost.log_date)} • {moodEmoji(activePost.mood)}
-            </span>
-          ) : (
-            <span style={{ fontSize: 12, opacity: 0.7 }}>Pick a post above.</span>
-          )}
-        </div>
-
-        {activePost?.cravings && activePost.cravings.length > 0 && (
-          <div style={{ ...S.wrap, marginTop: 10 }}>
-            {activePost.cravings.map((t) => (
-              <span key={t} style={S.pill}>
-                {t}
-              </span>
-            ))}
-          </div>
-        )}
-
-        <div style={{ marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
-          {activePost?.note ? activePost.note : <span style={{ opacity: 0.7 }}>No note.</span>}
-        </div>
-      </section>
-
-      {/* editor goes LAST (public doesn't need to see it) */}
-      <section style={S.card}>
-        <div style={S.rowBetween}>
-          <div style={S.cardTitle}>Today log (editor)</div>
-
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               type="date"
               value={logDate}
               onChange={(e) => loadForDate(e.target.value)}
-              style={{ ...S.input, width: 160 }}
+              style={{
+                ...S.smallInput,
+                width: isMobile ? "100%" : 160,
+              }}
             />
-            <button style={S.btn} onClick={save}>
+            <button
+              style={{ ...S.btnPrimary, width: isMobile ? "100%" : undefined }}
+              onClick={save}
+            >
               Save
             </button>
           </div>
         </div>
 
-        <div style={S.grid}>
-          <div style={S.label}>Mood</div>
-          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div
+          style={{
+            ...S.editorGrid,
+            gridTemplateColumns: isMobile ? "1fr" : "140px 1fr",
+          }}
+        >
+          <div style={S.editorLabel}>Log Date</div>
+          <div style={S.editorField}>
             <input
-              type="range"
-              min={1}
-              max={5}
-              value={mood}
-              onChange={(e) => setMood(clampMood(Number(e.target.value)))}
-              style={{ width: 240 }}
+              type="date"
+              value={logDate}
+              onChange={(e) => loadForDate(e.target.value)}
+              style={{
+                ...S.input,
+                maxWidth: isMobile ? "100%" : 180,
+              }}
             />
-            <div style={{ fontWeight: 950, width: 32 }}>
-              {mood} {moodEmoji(mood)}
+          </div>
+
+          <div style={S.editorLabel}>Title</div>
+          <div style={S.editorField}>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="write a title..."
+              style={S.input}
+              maxLength={120}
+            />
+          </div>
+
+          <div style={S.editorLabel}>Mood</div>
+          <div style={S.editorField}>
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                alignItems: isMobile ? "stretch" : "center",
+                flexDirection: isMobile ? "column" : "row",
+              }}
+            >
+              <input
+                type="range"
+                min={1}
+                max={5}
+                value={mood}
+                onChange={(e) => setMood(clampMood(Number(e.target.value)))}
+                style={{ width: isMobile ? "100%" : 260 }}
+              />
+              <div style={{ fontWeight: 700 }}>
+                {mood} {moodEmoji(mood)}
+              </div>
             </div>
           </div>
 
-          <div style={S.label}>Cravings</div>
-          <div>
-            <div style={{ display: "flex", gap: 8 }}>
+          <div style={S.editorLabel}>Cravings</div>
+          <div style={S.editorField}>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                marginBottom: 10,
+                flexDirection: isMobile ? "column" : "row",
+              }}
+            >
               <input
                 value={tagInput}
                 onChange={(e) => setTagInput(e.target.value)}
@@ -557,236 +951,493 @@ export default function AndrewPage() {
                     addTag();
                   }
                 }}
-                placeholder='type + Enter (or commas): "dumpling, mango"'
+                placeholder="dumpling, mango"
                 style={S.input}
               />
-              <button style={S.btn} onClick={addTag}>
+              <button
+                style={{ ...S.btnSm, width: isMobile ? "100%" : undefined }}
+                onClick={addTag}
+              >
                 Add
               </button>
             </div>
 
-            <div style={{ ...S.wrap, marginTop: 10 }}>
+            <div style={S.tagsInline}>
               {tags.length === 0 ? (
-                <span style={{ opacity: 0.7 }}>No tags.</span>
+                <span style={{ color: "#6b7280" }}>No tags</span>
               ) : (
                 tags.map((t) => (
                   <button
                     key={t}
                     onClick={() => removeTag(t)}
-                    style={S.pillBtn}
+                    style={{
+                      ...S.btnSm,
+                      padding: "4px 8px",
+                      fontWeight: 500,
+                    }}
                     title="Remove"
                   >
-                    {t} <span style={{ opacity: 0.65 }}>×</span>
+                    {t} ×
                   </button>
                 ))
               )}
             </div>
           </div>
 
-          <div style={{ ...S.label, alignSelf: "start", paddingTop: 6 }}>Note</div>
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="write… (this will show in Writing section when selected)"
-            style={{ ...S.input, minHeight: 160, resize: "vertical" }}
-          />
+          <div style={S.editorLabel}>Note</div>
+          <div style={S.editorField}>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="write..."
+              style={{
+                ...S.input,
+                minHeight: isMobile ? 180 : 220,
+                resize: "vertical",
+                fontFamily: `ui-monospace, SFMono-Regular, Menlo, monospace`,
+                lineHeight: 1.5,
+              }}
+            />
+          </div>
         </div>
       </section>
+
+      <section style={S.section}>
+  <div style={S.sectionTitle}>Access</div>
+
+  <div style={S.sectionBody}>
+    {!sessionEmail ? (
+      <div style={S.authBox}>
+
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr auto",
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
+          <input
+            type="email"
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+            placeholder="email"
+            autoComplete="email"
+            style={S.input}
+          />
+
+          <input
+            type="password"
+            value={authPassword}
+            onChange={(e) => setAuthPassword(e.target.value)}
+            placeholder="password"
+            autoComplete="current-password"
+            style={S.input}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleLogin();
+              }
+            }}
+          />
+
+          <button
+            style={{ ...S.btnPrimary, width: isMobile ? "100%" : 110 }}
+            onClick={handleLogin}
+            type="button"
+          >
+            Log in
+          </button>
+        </div>
+      </div>
+    ) : (
+      <div style={S.authBox}>
+        <div style={S.authStatusRow}>
+          <span style={S.authMuted}>Signed in as</span>
+          <strong>{sessionEmail}</strong>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
+          <input
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="set password once (optional)"
+            autoComplete="new-password"
+            style={S.input}
+          />
+
+          <button
+            style={{ ...S.btnPrimary, width: isMobile ? "100%" : 150 }}
+            onClick={handleSetPassword}
+            type="button"
+          >
+            Set Password
+          </button>
+        </div>
+
+        <button
+          style={{ ...S.btnSm, width: isMobile ? "100%" : 120 }}
+          onClick={handleLogout}
+          type="button"
+        >
+          Log out
+        </button>
+      </div>
+    )}
+  </div>
+</section>
     </div>
-  );
-}
-
-function Pill({ children }: { children: React.ReactNode }) {
-  return <span style={S.badge}>{children}</span>;
-}
-
-function LegendDot({ color, label }: { color: string; label: string }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <span
-        style={{
-          width: 12,
-          height: 12,
-          borderRadius: 4,
-          background: color,
-          border: "1px solid #e9ecef",
-          display: "inline-block",
-        }}
-      />
-      <span>{label}</span>
-    </span>
   );
 }
 
 const S: Record<string, React.CSSProperties> = {
   page: {
-    maxWidth: 920,
+    maxWidth: 1180,
     margin: "0 auto",
-    padding: 18,
-    fontFamily:
-      "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial",
-    background: "#f6f7f8", // clinic paper
-    color: "#121417",
+    padding: 20,
+    fontFamily: `"Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif`,
+    background: "#f3f4f6",
+    color: "#111827",
     minHeight: "100vh",
   },
 
   header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
-    gap: 12,
-    flexWrap: "wrap",
-    padding: "10px 12px",
-    borderRadius: 18,
-    background: "rgba(255,255,255,0.75)",
-    border: "1px solid rgba(18,20,23,0.08)",
-    boxShadow: "0 10px 30px rgba(18,20,23,0.06)",
-    backdropFilter: "blur(8px)",
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 8,
+    marginBottom: 12,
   },
 
-  headerRight: {
+  headerTitleRow: {
     display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-    alignItems: "center",
+    justifyContent: "space-between",
+    alignItems: "end",
+    gap: 12,
+    borderBottom: "1px solid #d1d5db",
+    paddingBottom: 8,
   },
 
   title: {
-    fontSize: 20,
-    fontWeight: 900,
-    letterSpacing: 0.2,
+    fontSize: 22,
+    fontWeight: 700,
+    letterSpacing: 0,
   },
 
   sub: {
     fontSize: 12,
-    opacity: 0.7,
+    color: "#6b7280",
     marginTop: 4,
   },
 
-  card: {
-    marginTop: 12,
-    padding: 14,
-    borderRadius: 18,
-    background: "rgba(255,255,255,0.78)",
-    border: "1px solid rgba(18,20,23,0.08)",
-    boxShadow: "0 12px 28px rgba(18,20,23,0.05)",
-    backdropFilter: "blur(8px)",
+  statsTable: {
+    width: "100%",
+    borderCollapse: "collapse",
+    background: "#ffffff",
+    fontSize: 13,
   },
 
-  cardTitle: {
-    fontWeight: 900,
-    letterSpacing: 0.2,
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
+  statsTh: {
+    textAlign: "left",
+    fontWeight: 600,
+    padding: "8px 10px",
+    border: "1px solid #d1d5db",
+    background: "#f9fafb",
+    color: "#374151",
+    whiteSpace: "nowrap",
   },
 
-  rowBetween: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
+  statsTd: {
+    padding: "8px 10px",
+    border: "1px solid #d1d5db",
+    background: "#ffffff",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+  },
+
+  section: {
+    marginTop: 16,
+    background: "#ffffff",
+    border: "1px solid #d1d5db",
+  },
+
+  sectionTitle: {
+    padding: "10px 12px",
+    fontWeight: 700,
+    fontSize: 13,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    borderBottom: "1px solid #d1d5db",
+    background: "#f9fafb",
+    color: "#374151",
+  },
+
+  sectionBody: {
+    padding: 12,
   },
 
   msg: {
     marginTop: 12,
-    padding: 10,
-    borderRadius: 14,
-    background: "rgba(255, 248, 224, 0.9)", // gentle yellow
-    border: "1px solid rgba(146, 120, 32, 0.22)",
-    color: "#2a2314",
+    padding: "10px 12px",
+    background: "#fff7e6",
+    border: "1px solid #f0c36d",
+    color: "#7c5700",
+    fontSize: 13,
   },
 
-  btn: {
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(18,20,23,0.14)",
-    background: "rgba(255,255,255,0.9)",
+  btnPrimary: {
+    padding: "8px 12px",
+    borderRadius: 0,
+    border: "1px solid #1f2937",
+    background: "#1f2937",
+    color: "#ffffff",
     cursor: "pointer",
-    fontWeight: 850,
-    boxShadow: "0 6px 14px rgba(18,20,23,0.05)",
+    fontWeight: 600,
+    fontSize: 13,
+  },
+
+  btnSm: {
+    padding: "4px 8px",
+    borderRadius: 0,
+    border: "1px solid #9ca3af",
+    background: "#ffffff",
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 12,
+    lineHeight: 1.2,
+    minHeight: 28,
+  },
+
+  btnGhostSm: {
+    padding: "4px 8px",
+    borderRadius: 0,
+    border: "1px solid #d1d5db",
+    background: "#f9fafb",
+    cursor: "pointer",
+    fontWeight: 500,
+    fontSize: 12,
+    lineHeight: 1.2,
+    minHeight: 28,
+    color: "#4b5563",
   },
 
   input: {
     width: "100%",
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(18,20,23,0.14)",
-    background: "rgba(255,255,255,0.92)",
+    padding: "8px 10px",
+    borderRadius: 0,
+    border: "1px solid #9ca3af",
+    background: "#ffffff",
     boxSizing: "border-box",
     outline: "none",
-  },
-
-  badge: {
-    padding: "6px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(18,20,23,0.12)",
-    background: "rgba(246,247,248,0.9)", // paper chip
-    fontSize: 12,
-    whiteSpace: "nowrap",
-  },
-
-  pill: {
-    padding: "6px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(18,20,23,0.12)",
-    background: "rgba(246,247,248,0.9)",
     fontSize: 13,
   },
 
-  pillBtn: {
-    padding: "6px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(18,20,23,0.12)",
-    background: "rgba(246,247,248,0.9)",
+  smallInput: {
+    padding: "6px 8px",
+    borderRadius: 0,
+    border: "1px solid #9ca3af",
+    background: "#ffffff",
+    boxSizing: "border-box",
+    outline: "none",
     fontSize: 13,
-    cursor: "pointer",
   },
 
-  wrap: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: 8,
+  progressWrap: {
     marginTop: 10,
-  },
-
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "120px 1fr",
-    gap: 12,
-    alignItems: "center",
-    marginTop: 12,
-  },
-
-  label: {
-    opacity: 0.75,
-    fontWeight: 850,
-  },
-
-  progressOuter: {
-    marginTop: 10,
-    background: "rgba(18,20,23,0.06)",
-    height: 10,
-    borderRadius: 999,
+    border: "1px solid #d1d5db",
+    height: 18,
+    background: "#f9fafb",
+    position: "relative",
     overflow: "hidden",
   },
 
-  progressInner: {
+  progressBar: {
     height: "100%",
-    background: "#2f6f62", // deep clinic green
-    borderRadius: 999,
+    background: "#9ec5b8",
   },
 
-  timelineRow: {
-    width: "100%",
-    border: "1px solid rgba(18,20,23,0.10)",
-    borderRadius: 16,
-    padding: "10px 12px",
-    cursor: "pointer",
+  progressLabel: {
+    position: "absolute",
+    inset: 0,
     display: "flex",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "center",
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#111827",
+    pointerEvents: "none",
+  },
+
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+    fontSize: 13,
+    background: "#fff",
+  },
+
+  th: {
+    textAlign: "left",
+    padding: "8px 10px",
+    border: "1px solid #d1d5db",
+    background: "#f9fafb",
+    fontWeight: 700,
+    color: "#374151",
+    whiteSpace: "nowrap",
+  },
+
+  td: {
+    padding: "8px 10px",
+    border: "1px solid #e5e7eb",
+    verticalAlign: "top",
+  },
+
+  tdMono: {
+    padding: "8px 10px",
+    border: "1px solid #e5e7eb",
+    verticalAlign: "top",
+    fontVariantNumeric: "tabular-nums",
+    fontFamily: `ui-monospace, SFMono-Regular, Menlo, monospace`,
+    whiteSpace: "nowrap",
+  },
+
+  selectedRow: {
+    background: "#eef6f3",
+  },
+
+  tagsInline: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+
+  tagCell: {
+    display: "inline-block",
+    padding: "2px 6px",
+    border: "1px solid #d1d5db",
+    background: "#f9fafb",
+    fontSize: 12,
+  },
+
+  editorGrid: {
+    display: "grid",
+    gridTemplateColumns: "140px 1fr",
+    borderTop: "1px solid #d1d5db",
+    borderLeft: "1px solid #d1d5db",
+  },
+
+  editorLabel: {
+    padding: "10px 12px",
+    borderRight: "1px solid #d1d5db",
+    borderBottom: "1px solid #d1d5db",
+    background: "#f9fafb",
+    fontWeight: 700,
+    fontSize: 13,
+  },
+
+  editorField: {
+    padding: "10px 12px",
+    borderRight: "1px solid #d1d5db",
+    borderBottom: "1px solid #d1d5db",
+    background: "#fff",
+  },
+
+  noteBox: {
+    minHeight: 120,
+    whiteSpace: "pre-wrap",
+    lineHeight: 1.6,
+    fontSize: 14,
+  },
+
+  mobileStatsGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    borderTop: "1px solid #d1d5db",
+    borderLeft: "1px solid #d1d5db",
+    background: "#fff",
+  },
+
+  mobileField: {
+    borderRight: "1px solid #d1d5db",
+    borderBottom: "1px solid #d1d5db",
+    padding: "10px 12px",
+    background: "#fff",
+  },
+
+  mobileFieldLabel: {
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+    color: "#6b7280",
+    marginBottom: 4,
+  },
+
+  mobileFieldValue: {
+    fontSize: 13,
+    color: "#111827",
+    lineHeight: 1.45,
+    wordBreak: "break-word",
+  },
+
+  mobileList: {
+    display: "grid",
+    borderTop: "1px solid #d1d5db",
+    borderLeft: "1px solid #d1d5db",
+  },
+
+  mobileListRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
     gap: 12,
-    background: "rgba(255,255,255,0.88)",
+    alignItems: "center",
+    padding: "10px 12px",
+    borderRight: "1px solid #d1d5db",
+    borderBottom: "1px solid #d1d5db",
+    background: "#fff",
+  },
+
+  mobileListPrimary: {
+    fontSize: 13,
+    color: "#111827",
+    wordBreak: "break-word",
+  },
+
+  mobileListSecondary: {
+    fontSize: 13,
+    color: "#374151",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+  },
+
+  mobileDetailWrap: {
+    display: "grid",
+    gap: 0,
+    borderTop: "1px solid #d1d5db",
+    borderLeft: "1px solid #d1d5db",
+  },
+
+  authBox: {
+    display: "grid",
+    gap: 10,
+  },
+
+  authStatusRow: {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+
+  authMuted: {
+    fontSize: 12,
+    color: "#6b7280",
   },
 };
