@@ -588,7 +588,7 @@ export default function AndrewPage() {
 
   <div style={S.sectionBody}>
     <div style={{ marginBottom: 10, fontSize: 12, color: "#6b7280" }}>
-      😭 worst • 😖 bad • 😐 neutral • 🙂 good • 😈 great
+      😭 worst • 😖 bad • 😐 neutral • 🙂 good • 🥰 great
     </div>
 
     <div style={{ overflowX: "auto" }}>
