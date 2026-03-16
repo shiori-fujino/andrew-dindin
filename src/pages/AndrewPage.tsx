@@ -86,14 +86,6 @@ function useIsMobile(breakpoint = 768) {
   return isMobile;
 }
 
-const moodColor = (m: number | null | undefined) => {
-  if (!m) return "#ffffff";
-  if (m === 1) return "#ff6b6b";
-  if (m === 2) return "#ffa94d";
-  if (m === 3) return "#ffd43b";
-  if (m === 4) return "#69db7c";
-  return "#38d9a9";
-};
 
 function moodEmoji(m: number) {
   const mm = clampMood(m);
@@ -101,7 +93,7 @@ function moodEmoji(m: number) {
   if (mm === 2) return "😖";
   if (mm === 3) return "😐";
   if (mm === 4) return "🙂";
-  return "😈";
+  return "🥰";
 }
 
 function deriveTitle(title: string | null, note: string | null) {
@@ -337,15 +329,22 @@ export default function AndrewPage() {
   );
 
   const streak = useMemo(() => {
-    const set = new Set(rows.map((r) => r.log_date));
-    let cur = todayISO;
-    let s = 0;
-    while (set.has(cur)) {
-      s += 1;
-      cur = addDaysISO(cur, -1);
-    }
-    return s;
-  }, [rows, todayISO]);
+  const loggedDates = new Set(rows.map((r) => r.log_date));
+
+  const startISO = loggedDates.has(todayISO)
+    ? todayISO
+    : addDaysISO(todayISO, -1);
+
+  let count = 0;
+  let cur = startISO;
+
+  while (loggedDates.has(cur)) {
+    count += 1;
+    cur = addDaysISO(cur, -1);
+  }
+
+  return count;
+}, [rows, todayISO]);
 
   const bestStreak = useMemo(() => {
     const set = new Set(rows.map((r) => r.log_date));
@@ -438,15 +437,15 @@ export default function AndrewPage() {
   }, [page, pageCount]);
 
   useEffect(() => {
-    if (!pageItems.length) {
-      setActiveId(null);
-      return;
-    }
+  if (!pageItems.length) {
+    setActiveId(null);
+    return;
+  }
 
-    if (!pageItems.some((r) => r.id === activeId)) {
-      setActiveId(pageItems[0]?.id ?? null);
-    }
-  }, [pageItems, activeId]);
+  if (activeId === null) {
+    setActiveId(pageItems[0].id);
+  }
+}, [pageItems]);
 
   function addTag() {
     const newTags = cleanTags(tagInput);
@@ -585,39 +584,53 @@ export default function AndrewPage() {
       </section>
 
       <section style={S.section}>
-        <div style={S.sectionTitle}>Mood Heatmap</div>
-        <div style={S.sectionBody}>
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#6b7280" }}>
-            1 = worst • 5 = best • blank = no log
-          </div>
+  <div style={S.sectionTitle}>Mood Heatmap</div>
 
-          <div style={{ overflowX: "auto" }}>
-            <div style={{ display: "grid", gridAutoFlow: "column", gap: 2 }}>
-              {heatmap.map((col) => (
-                <div key={col.weekStartISO} style={{ display: "grid", gap: 2 }}>
-                  {col.days.map((d) => {
-                    const c = d.mood ? moodColor(d.mood) : "#ffffff";
-                    return (
-                      <div
-                        key={d.iso}
-                        title={`${formatDateAU(d.iso)}${
-                          d.mood ? ` mood ${d.mood}` : ""
-                        }`}
-                        style={{
-                          width: isMobile ? 12 : 16,
-                          height: isMobile ? 12 : 16,
-                          background: c,
-                          border: "1px solid #d1d5db",
-                        }}
-                      />
-                    );
-                  })}
+  <div style={S.sectionBody}>
+    <div style={{ marginBottom: 10, fontSize: 12, color: "#6b7280" }}>
+      😭 worst • 😖 bad • 😐 neutral • 🙂 good • 😈 great
+    </div>
+
+    <div style={{ overflowX: "auto" }}>
+      <div style={{ display: "grid", gridAutoFlow: "column", gap: 2 }}>
+        {heatmap.map((col) => (
+          <div key={col.weekStartISO} style={{ display: "grid", gap: 2 }}>
+            {col.days.map((d) => {
+              const emoji = d.mood ? moodEmoji(d.mood) : "";
+
+              return (
+                <div
+                  key={d.iso}
+                  title={
+                    d.mood
+                      ? `${formatDateAU(d.iso)} • Mood ${d.mood}/5`
+                      : `${formatDateAU(d.iso)} • No log`
+                  }
+                  style={{
+                    width: isMobile ? 18 : 22,
+                    height: isMobile ? 18 : 22,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border:
+                      d.iso === todayISO
+                        ? "1px solid #111827"
+                        : "1px solid #d1d5db",
+                    background: "#ffffff",
+                    fontSize: isMobile ? 12 : 14,
+                    lineHeight: 1,
+                  }}
+                >
+                  {emoji}
                 </div>
-              ))}
-            </div>
+              );
+            })}
           </div>
-        </div>
-      </section>
+        ))}
+      </div>
+    </div>
+  </div>
+</section>
 
       <section style={S.section}>
         <div style={S.sectionTitle}>Top Cravings</div>
