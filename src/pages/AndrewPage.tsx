@@ -1,5 +1,5 @@
 // AndrewPage.tsx
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -9,6 +9,8 @@ const supabase = createClient(
 
 const SUM30_ISO = "2026-07-25";
 const LMP_ISO = "2026-02-01";
+const PAGE_SIZE = 10;
+const HEATMAP_WEEKS = 16;
 
 type LogRow = {
   id: number;
@@ -132,19 +134,6 @@ export default function AndrewPage() {
 
   const [todayISO, setTodayISO] = useState(() => formatISODateLocal(new Date()));
 
-  useEffect(() => {
-    const now = new Date();
-    const next = new Date(now);
-    next.setHours(24, 0, 0, 0);
-    const ms = next.getTime() - now.getTime();
-
-    const t = window.setTimeout(() => {
-      setTodayISO(formatISODateLocal(new Date()));
-    }, ms + 1000);
-
-    return () => window.clearTimeout(t);
-  }, [todayISO]);
-
   const [rows, setRows] = useState<LogRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
@@ -161,9 +150,21 @@ export default function AndrewPage() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
 
-  const PAGE_SIZE = 10;
   const [page, setPage] = useState(1);
   const [activeId, setActiveId] = useState<number | null>(null);
+
+  useEffect(() => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(24, 0, 0, 0);
+    const ms = next.getTime() - now.getTime();
+
+    const t = window.setTimeout(() => {
+      setTodayISO(formatISODateLocal(new Date()));
+    }, ms + 1000);
+
+    return () => window.clearTimeout(t);
+  }, [todayISO]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -195,6 +196,7 @@ export default function AndrewPage() {
     } else {
       setRows((data ?? []) as LogRow[]);
     }
+
     setLoading(false);
   }
 
@@ -208,7 +210,10 @@ export default function AndrewPage() {
       .eq("log_date", dateISO)
       .maybeSingle();
 
-    if (error) return setMsg(error.message);
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
 
     if (data) {
       const r = data as LogRow;
@@ -232,17 +237,21 @@ export default function AndrewPage() {
       title: title.trim() || null,
       mood: clampMood(mood),
       cravings: tags,
-      note: note,
+      note,
     };
 
     const { error } = await supabase.from("preg_log").upsert(payload as any, {
       onConflict: "log_date",
     });
 
-    if (error) return setMsg(error.message);
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
 
     setMsg("Saved.");
     await loadFeed();
+    await loadForDate(logDate);
   }
 
   async function handleLogin() {
@@ -282,26 +291,28 @@ export default function AndrewPage() {
 
     setMsg("Logged out.");
   }
-async function handleSetPassword() {
-  setMsg(null);
 
-  if (!newPassword.trim()) {
-    setMsg("Enter a password.");
-    return;
+  async function handleSetPassword() {
+    setMsg(null);
+
+    if (!newPassword.trim()) {
+      setMsg("Enter a password.");
+      return;
+    }
+
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
+
+    setNewPassword("");
+    setMsg("Password set.");
   }
 
-  const { error } = await supabase.auth.updateUser({
-    password: newPassword,
-  });
-
-  if (error) {
-    setMsg(error.message);
-    return;
-  }
-
-  setNewPassword("");
-  setMsg("Password set.");
-}
   useEffect(() => {
     loadFeed();
     loadForDate(todayISO);
@@ -339,9 +350,11 @@ async function handleSetPassword() {
   const bestStreak = useMemo(() => {
     const set = new Set(rows.map((r) => r.log_date));
     if (set.size === 0) return 0;
+
     const dates = Array.from(set).sort();
     let best = 1;
     let run = 1;
+
     for (let i = 1; i < dates.length; i++) {
       const prev = dates[i - 1];
       const cur = dates[i];
@@ -349,11 +362,13 @@ async function handleSetPassword() {
       else run = 1;
       if (run > best) best = run;
     }
+
     return best;
   }, [rows]);
 
   const cravingCloud = useMemo(() => {
     const m = new Map<string, number>();
+
     for (const r of rows) {
       for (const t of r.cravings ?? []) {
         const k = (t ?? "").trim().toLowerCase();
@@ -361,12 +376,12 @@ async function handleSetPassword() {
         m.set(k, (m.get(k) ?? 0) + 1);
       }
     }
+
     return Array.from(m.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 30);
   }, [rows]);
 
-  const HEATMAP_WEEKS = 16;
   const heatmap = useMemo(() => {
     const byDate = new Map<string, number>();
     rows.forEach((r) => byDate.set(r.log_date, clampMood(Number(r.mood))));
@@ -416,6 +431,23 @@ async function handleSetPassword() {
     return rows.find((r) => r.id === activeId) ?? null;
   }, [rows, activeId]);
 
+  useEffect(() => {
+    if (page > pageCount) {
+      setPage(pageCount);
+    }
+  }, [page, pageCount]);
+
+  useEffect(() => {
+    if (!pageItems.length) {
+      setActiveId(null);
+      return;
+    }
+
+    if (!pageItems.some((r) => r.id === activeId)) {
+      setActiveId(pageItems[0]?.id ?? null);
+    }
+  }, [pageItems, activeId]);
+
   function addTag() {
     const newTags = cleanTags(tagInput);
     if (!newTags.length) return;
@@ -426,6 +458,15 @@ async function handleSetPassword() {
   function removeTag(t: string) {
     setTags((prev) => prev.filter((x) => x !== t));
   }
+
+  const visiblePages = Array.from({ length: pageCount }, (_, i) => i + 1).filter(
+    (p) => {
+      if (pageCount <= 7) return true;
+      if (page <= 4) return p <= 5 || p === pageCount;
+      if (page >= pageCount - 3) return p === 1 || p >= pageCount - 4;
+      return p === 1 || p === pageCount || Math.abs(p - page) <= 1;
+    }
+  );
 
   return (
     <div style={{ ...S.page, padding: isMobile ? 12 : 20 }}>
@@ -616,68 +657,7 @@ async function handleSetPassword() {
       </section>
 
       <section style={S.section}>
-        <div
-          style={{
-            ...S.sectionTitle,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: isMobile ? "stretch" : "center",
-            flexDirection: isMobile ? "column" : "row",
-            gap: 8,
-          }}
-        >
-          <span>Timeline</span>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: isMobile ? "1fr 1fr" : "auto auto auto auto",
-              gap: 6,
-              alignItems: "center",
-              width: isMobile ? "100%" : undefined,
-            }}
-          >
-            <button
-              style={{ ...S.btnSm, width: isMobile ? "100%" : undefined }}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-            >
-              Prev
-            </button>
-
-            <button
-              style={{ ...S.btnSm, width: isMobile ? "100%" : undefined }}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              disabled={page >= pageCount}
-            >
-              Next
-            </button>
-
-            <button
-              style={{
-                ...S.btnSm,
-                width: isMobile ? "100%" : undefined,
-                gridColumn: isMobile ? "1 / -1" : undefined,
-              }}
-              onClick={loadFeed}
-              disabled={loading}
-            >
-              {loading ? "Loading..." : "Refresh"}
-            </button>
-
-            <span
-              style={{
-                fontSize: 11,
-                color: "#6b7280",
-                whiteSpace: "nowrap",
-                textAlign: isMobile ? "center" : "left",
-                gridColumn: isMobile ? "1 / -1" : undefined,
-              }}
-            >
-              Page {page} / {pageCount}
-            </span>
-          </div>
-        </div>
+        <div style={S.sectionTitle}>Timeline</div>
 
         <div style={{ overflowX: "auto" }}>
           {loading ? (
@@ -685,50 +665,111 @@ async function handleSetPassword() {
           ) : rows.length === 0 ? (
             <div style={{ padding: 12, color: "#6b7280" }}>No entries yet.</div>
           ) : (
-            <table style={S.table}>
-              <thead>
-                <tr>
-                  <th style={S.th}>Date</th>
-                  <th style={S.th}>Mood</th>
-                  <th style={S.th}>Title</th>
-                  <th style={S.th}>Cravings</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageItems.map((r) => {
-                  const selected = activeId === r.id;
+            <>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Date</th>
+                    <th style={S.th}>Mood</th>
+                    <th style={S.th}>Title</th>
+                    <th style={S.th}>Cravings</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageItems.map((r) => {
+                    const selected = activeId === r.id;
+                    return (
+                      <tr
+                        key={r.id}
+                        onClick={() => setActiveId(r.id)}
+                        style={{
+                          ...(selected ? S.selectedRow : {}),
+                          cursor: "pointer",
+                        }}
+                      >
+                        <td style={S.tdMono}>{formatDateAU(r.log_date)}</td>
+                        <td style={S.td}>
+                          {moodEmoji(r.mood)} {r.mood}/5
+                        </td>
+                        <td style={S.td}>{deriveTitle(r.title, r.note)}</td>
+                        <td style={S.td}>
+                          <div style={S.tagsInline}>
+                            {(r.cravings ?? []).length === 0 ? (
+                              <span style={{ color: "#9ca3af" }}>-</span>
+                            ) : (
+                              (r.cravings ?? []).map((t) => (
+                                <span key={t} style={S.tagCell}>
+                                  {t}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              <div style={S.paginationWrap}>
+                <button
+                  style={S.pageBtn}
+                  onClick={() => setPage(1)}
+                  disabled={page === 1}
+                  type="button"
+                >
+                  «
+                </button>
+
+                <button
+                  style={S.pageBtn}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  type="button"
+                >
+                  ‹
+                </button>
+
+                {visiblePages.map((p, i) => {
+                  const prev = visiblePages[i - 1];
+                  const showGap = prev && p - prev > 1;
+
                   return (
-                    <tr
-                      key={r.id}
-                      onClick={() => setActiveId(r.id)}
-                      style={{
-                        ...(selected ? S.selectedRow : {}),
-                        cursor: "pointer",
-                      }}
-                    >
-                      <td style={S.tdMono}>{formatDateAU(r.log_date)}</td>
-                      <td style={S.td}>
-                        {moodEmoji(r.mood)} {r.mood}/5
-                      </td>
-                      <td style={S.td}>{deriveTitle(r.title, r.note)}</td>
-                      <td style={S.td}>
-                        <div style={S.tagsInline}>
-                          {(r.cravings ?? []).length === 0 ? (
-                            <span style={{ color: "#9ca3af" }}>-</span>
-                          ) : (
-                            (r.cravings ?? []).map((t) => (
-                              <span key={t} style={S.tagCell}>
-                                {t}
-                              </span>
-                            ))
-                          )}
-                        </div>
-                      </td>
-                    </tr>
+                    <React.Fragment key={p}>
+                      {showGap && <span style={S.pageGap}>…</span>}
+                      <button
+                        style={{
+                          ...S.pageBtn,
+                          ...(p === page ? S.pageBtnActive : {}),
+                        }}
+                        onClick={() => setPage(p)}
+                        type="button"
+                      >
+                        {p}
+                      </button>
+                    </React.Fragment>
                   );
                 })}
-              </tbody>
-            </table>
+
+                <button
+                  style={S.pageBtn}
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  disabled={page === pageCount}
+                  type="button"
+                >
+                  ›
+                </button>
+
+                <button
+                  style={S.pageBtn}
+                  onClick={() => setPage(pageCount)}
+                  disabled={page === pageCount}
+                  type="button"
+                >
+                  »
+                </button>
+              </div>
+            </>
           )}
         </div>
       </section>
@@ -1003,98 +1044,96 @@ async function handleSetPassword() {
       </section>
 
       <section style={S.section}>
-  <div style={S.sectionTitle}>Access</div>
+        <div style={S.sectionTitle}>Access</div>
 
-  <div style={S.sectionBody}>
-    {!sessionEmail ? (
-      <div style={S.authBox}>
+        <div style={S.sectionBody}>
+          {!sessionEmail ? (
+            <div style={S.authBox}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr auto",
+                  gap: 8,
+                  alignItems: "center",
+                }}
+              >
+                <input
+                  type="email"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="email"
+                  autoComplete="email"
+                  style={S.input}
+                />
 
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="password"
+                  autoComplete="current-password"
+                  style={S.input}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleLogin();
+                    }
+                  }}
+                />
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr auto",
-            gap: 8,
-            alignItems: "center",
-          }}
-        >
-          <input
-            type="email"
-            value={authEmail}
-            onChange={(e) => setAuthEmail(e.target.value)}
-            placeholder="email"
-            autoComplete="email"
-            style={S.input}
-          />
+                <button
+                  style={{ ...S.btnPrimary, width: isMobile ? "100%" : 110 }}
+                  onClick={handleLogin}
+                  type="button"
+                >
+                  Log in
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={S.authBox}>
+              <div style={S.authStatusRow}>
+                <span style={S.authMuted}>Signed in as</span>
+                <strong>{sessionEmail}</strong>
+              </div>
 
-          <input
-            type="password"
-            value={authPassword}
-            onChange={(e) => setAuthPassword(e.target.value)}
-            placeholder="password"
-            autoComplete="current-password"
-            style={S.input}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleLogin();
-              }
-            }}
-          />
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
+                  gap: 8,
+                  alignItems: "center",
+                }}
+              >
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="set password once (optional)"
+                  autoComplete="new-password"
+                  style={S.input}
+                />
 
-          <button
-            style={{ ...S.btnPrimary, width: isMobile ? "100%" : 110 }}
-            onClick={handleLogin}
-            type="button"
-          >
-            Log in
-          </button>
+                <button
+                  style={{ ...S.btnPrimary, width: isMobile ? "100%" : 150 }}
+                  onClick={handleSetPassword}
+                  type="button"
+                >
+                  Set Password
+                </button>
+              </div>
+
+              <button
+                style={{ ...S.btnSm, width: isMobile ? "100%" : 120 }}
+                onClick={handleLogout}
+                type="button"
+              >
+                Log out
+              </button>
+            </div>
+          )}
         </div>
-      </div>
-    ) : (
-      <div style={S.authBox}>
-        <div style={S.authStatusRow}>
-          <span style={S.authMuted}>Signed in as</span>
-          <strong>{sessionEmail}</strong>
-        </div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
-            gap: 8,
-            alignItems: "center",
-          }}
-        >
-          <input
-            type="password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            placeholder="set password once (optional)"
-            autoComplete="new-password"
-            style={S.input}
-          />
-
-          <button
-            style={{ ...S.btnPrimary, width: isMobile ? "100%" : 150 }}
-            onClick={handleSetPassword}
-            type="button"
-          >
-            Set Password
-          </button>
-        </div>
-
-        <button
-          style={{ ...S.btnSm, width: isMobile ? "100%" : 120 }}
-          onClick={handleLogout}
-          type="button"
-        >
-          Log out
-        </button>
-      </div>
-    )}
-  </div>
-</section>
+      </section>
     </div>
   );
 }
@@ -1439,5 +1478,41 @@ const S: Record<string, React.CSSProperties> = {
   authMuted: {
     fontSize: 12,
     color: "#6b7280",
+  },
+
+  paginationWrap: {
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+    padding: "12px 10px",
+    borderTop: "1px solid #d1d5db",
+    background: "#fff",
+    flexWrap: "wrap",
+  },
+
+  pageBtn: {
+    minWidth: 30,
+    height: 30,
+    padding: "0 8px",
+    border: "1px solid #d1d5db",
+    background: "#ffffff",
+    color: "#374151",
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+    lineHeight: 1,
+  },
+
+  pageBtnActive: {
+    background: "#1f2937",
+    color: "#ffffff",
+    border: "1px solid #1f2937",
+  },
+
+  pageGap: {
+    padding: "0 2px",
+    fontSize: 12,
+    color: "#9ca3af",
   },
 };
