@@ -7,6 +7,7 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY!
 );
 
+const HOKA_ISO = "2026-05-03";
 const SUM30_ISO = "2026-07-25";
 const LMP_ISO = "2026-02-01";
 const PAGE_SIZE = 10;
@@ -85,7 +86,6 @@ function useIsMobile(breakpoint = 768) {
 
   return isMobile;
 }
-
 
 function moodEmoji(m: number) {
   const mm = clampMood(m);
@@ -318,10 +318,16 @@ export default function AndrewPage() {
   const GA_WEEKS = useMemo(() => Math.floor(gaDays / 7), [gaDays]);
   const GA_DAYS = useMemo(() => gaDays % 7, [gaDays]);
 
+  const hokaDDay = useMemo(
+    () => daysBetweenISO(todayISO, HOKA_ISO),
+    [todayISO]
+  );
+
   const sum30DDay = useMemo(
     () => daysBetweenISO(todayISO, SUM30_ISO),
     [todayISO]
   );
+
   const dueISO = useMemo(() => addDaysISO(LMP_ISO, 280), []);
   const dueDDay = useMemo(
     () => daysBetweenISO(todayISO, dueISO),
@@ -329,22 +335,22 @@ export default function AndrewPage() {
   );
 
   const streak = useMemo(() => {
-  const loggedDates = new Set(rows.map((r) => r.log_date));
+    const loggedDates = new Set(rows.map((r) => r.log_date));
 
-  const startISO = loggedDates.has(todayISO)
-    ? todayISO
-    : addDaysISO(todayISO, -1);
+    const startISO = loggedDates.has(todayISO)
+      ? todayISO
+      : addDaysISO(todayISO, -1);
 
-  let count = 0;
-  let cur = startISO;
+    let count = 0;
+    let cur = startISO;
 
-  while (loggedDates.has(cur)) {
-    count += 1;
-    cur = addDaysISO(cur, -1);
-  }
+    while (loggedDates.has(cur)) {
+      count += 1;
+      cur = addDaysISO(cur, -1);
+    }
 
-  return count;
-}, [rows, todayISO]);
+    return count;
+  }, [rows, todayISO]);
 
   const bestStreak = useMemo(() => {
     const set = new Set(rows.map((r) => r.log_date));
@@ -437,15 +443,15 @@ export default function AndrewPage() {
   }, [page, pageCount]);
 
   useEffect(() => {
-  if (!pageItems.length) {
-    setActiveId(null);
-    return;
-  }
+    if (!pageItems.length) {
+      setActiveId(null);
+      return;
+    }
 
-  if (activeId === null) {
-    setActiveId(pageItems[0].id);
-  }
-}, [pageItems]);
+    if (activeId === null) {
+      setActiveId(pageItems[0].id);
+    }
+  }, [pageItems, activeId]);
 
   function addTag() {
     const newTags = cleanTags(tagInput);
@@ -475,13 +481,28 @@ export default function AndrewPage() {
             <div style={S.title}>Pregnancy Log</div>
             <div style={S.sub}>Data + diary. Public read. One log per day.</div>
           </div>
+
+          <a
+            href="https://aaot.vercel.app"
+            target="_blank"
+            rel="noreferrer"
+            style={S.portfolioLink}
+          >
+            More projects ↗
+          </a>
         </div>
 
         {isMobile ? (
           <div style={S.mobileStatsGrid}>
             <MobileField label="Current Streak" value={streak} />
             <MobileField label="Best Streak" value={bestStreak} />
-            <MobileField label="SUM 30" value={`D-${Math.max(0, sum30DDay)}`} />
+            <MobileField
+              label="HOKA Half"
+              value={`D-${Math.max(0, hokaDDay)} (${formatDateAU(HOKA_ISO)})`}
+            />
+            <MobileField 
+            label="SUM 30" 
+            value={`D-${Math.max(0, sum30DDay)} (${formatDateAU(SUM30_ISO)})`} />
             <MobileField
               label="Due"
               value={`D-${Math.max(0, dueDDay)} (${formatDateAU(dueISO)})`}
@@ -501,6 +522,7 @@ export default function AndrewPage() {
               <tr>
                 <th style={S.statsTh}>Current Streak</th>
                 <th style={S.statsTh}>Best Streak</th>
+                <th style={S.statsTh}>HOKA Half</th>
                 <th style={S.statsTh}>SUM 30</th>
                 <th style={S.statsTh}>Due</th>
                 <th style={S.statsTh}>GA</th>
@@ -511,6 +533,9 @@ export default function AndrewPage() {
               <tr>
                 <td style={S.statsTd}>{streak}</td>
                 <td style={S.statsTd}>{bestStreak}</td>
+                <td style={S.statsTd}>
+                  D-{Math.max(0, hokaDDay)} ({formatDateAU(HOKA_ISO)})
+                </td>
                 <td style={S.statsTd}>D-{Math.max(0, sum30DDay)}</td>
                 <td style={S.statsTd}>
                   D-{Math.max(0, dueDDay)} ({formatDateAU(dueISO)})
@@ -584,53 +609,53 @@ export default function AndrewPage() {
       </section>
 
       <section style={S.section}>
-  <div style={S.sectionTitle}>Mood Heatmap</div>
+        <div style={S.sectionTitle}>Mood Heatmap</div>
 
-  <div style={S.sectionBody}>
-    <div style={{ marginBottom: 10, fontSize: 12, color: "#6b7280" }}>
-      😭 worst • 😖 bad • 😐 neutral • 🙂 good • 🥰 great
-    </div>
-
-    <div style={{ overflowX: "auto" }}>
-      <div style={{ display: "grid", gridAutoFlow: "column", gap: 2 }}>
-        {heatmap.map((col) => (
-          <div key={col.weekStartISO} style={{ display: "grid", gap: 2 }}>
-            {col.days.map((d) => {
-              const emoji = d.mood ? moodEmoji(d.mood) : "";
-
-              return (
-                <div
-                  key={d.iso}
-                  title={
-                    d.mood
-                      ? `${formatDateAU(d.iso)} • Mood ${d.mood}/5`
-                      : `${formatDateAU(d.iso)} • No log`
-                  }
-                  style={{
-                    width: isMobile ? 18 : 22,
-                    height: isMobile ? 18 : 22,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    border:
-                      d.iso === todayISO
-                        ? "1px solid #111827"
-                        : "1px solid #d1d5db",
-                    background: "#ffffff",
-                    fontSize: isMobile ? 12 : 14,
-                    lineHeight: 1,
-                  }}
-                >
-                  {emoji}
-                </div>
-              );
-            })}
+        <div style={S.sectionBody}>
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#6b7280" }}>
+            😭 worst • 😖 bad • 😐 neutral • 🙂 good • 🥰 great
           </div>
-        ))}
-      </div>
-    </div>
-  </div>
-</section>
+
+          <div style={{ overflowX: "auto" }}>
+            <div style={{ display: "grid", gridAutoFlow: "column", gap: 2 }}>
+              {heatmap.map((col) => (
+                <div key={col.weekStartISO} style={{ display: "grid", gap: 2 }}>
+                  {col.days.map((d) => {
+                    const emoji = d.mood ? moodEmoji(d.mood) : "";
+
+                    return (
+                      <div
+                        key={d.iso}
+                        title={
+                          d.mood
+                            ? `${formatDateAU(d.iso)} • Mood ${d.mood}/5`
+                            : `${formatDateAU(d.iso)} • No log`
+                        }
+                        style={{
+                          width: isMobile ? 18 : 22,
+                          height: isMobile ? 18 : 22,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          border:
+                            d.iso === todayISO
+                              ? "1px solid #111827"
+                              : "1px solid #d1d5db",
+                          background: "#ffffff",
+                          fontSize: isMobile ? 12 : 14,
+                          lineHeight: 1,
+                        }}
+                      >
+                        {emoji}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section style={S.section}>
         <div style={S.sectionTitle}>Top Cravings</div>
@@ -1176,6 +1201,7 @@ const S: Record<string, React.CSSProperties> = {
     gap: 12,
     borderBottom: "1px solid #d1d5db",
     paddingBottom: 8,
+    flexWrap: "wrap",
   },
 
   title: {
@@ -1188,6 +1214,20 @@ const S: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: "#6b7280",
     marginTop: 4,
+  },
+
+  portfolioLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "6px 10px",
+    border: "1px solid #d1d5db",
+    background: "#ffffff",
+    color: "#374151",
+    textDecoration: "none",
+    fontSize: 12,
+    fontWeight: 600,
+    whiteSpace: "nowrap",
   },
 
   statsTable: {
